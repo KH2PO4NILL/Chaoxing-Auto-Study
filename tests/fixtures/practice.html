@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>章节练习</title>
+<form id="exercise">
+  <article class="TiMu" id="q1">
+    <div class="Zy_TItle"><h3 class="clearfix">哪一个是质数？</h3></div>
+    <input type="hidden" id="answertype1" value="0">
+    <ul>
+      <li><label><input type="radio" name="q1" value="A"> 9</label></li>
+      <li><label><input type="radio" name="q1" value="B"> 7</label></li>
+    </ul>
+  </article>
+  <article class="TiMu" id="q2">
+    <div class="Zy_TItle"><h3 class="clearfix">哪些数是偶数？</h3></div>
+    <input type="hidden" id="answertype2" value="1">
+    <ul>
+      <li><label><input type="checkbox" name="q2" value="A"> 4</label></li>
+      <li><label><input type="checkbox" name="q2" value="B"> 5</label></li>
+      <li><label><input type="checkbox" name="q2" value="C"> 8</label></li>
+    </ul>
+  </article>
+  <article class="TiMu" id="q3">
+    <div class="Zy_TItle"><h3 class="clearfix">水在标准大气压下沸点是 100℃。</h3></div>
+    <input type="hidden" id="answertype3" value="3">
+    <ul>
+      <li><label><input type="radio" name="q3" value="false"> 错误</label></li>
+      <li><label><input type="radio" name="q3" value="true"> 正确</label></li>
+    </ul>
+  </article>
+  <article class="TiMu" id="q4">
+    <div class="Zy_TItle"><h3 class="clearfix">图中有什么？ <img alt="图示"></h3></div>
+    <input type="hidden" id="answertype4" value="0">
+    <ul>
+      <li><label><input type="radio" name="q4" value="A"> 甲</label></li>
+      <li><label><input type="radio" name="q4" value="B"> 乙</label></li>
+    </ul>
+  </article>
+  <button type="submit">提交</button><output id="submitted">未提交</output>
+</form>
+<script>
+  document.addEventListener('submit', (event) => {
+    event.preventDefault();
+    document.getElementById('submitted').textContent = '已提交';
+  });
+</script>

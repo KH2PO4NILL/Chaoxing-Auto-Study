@@ -1,0 +1,79 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>虚构课程</title>
+<h1 id="courseName">演示课程</h1>
+<div id="chapters">
+  <div class="posCatalog_select firstLayer" id="cur10"><span class="posCatalog_name">第一章</span></div>
+  <div class="posCatalog_select" id="cur11" data-section-type="video"><a class="posCatalog_name">课程导论</a><span class="jobUnfinishCount">1</span></div>
+  <div class="posCatalog_select" id="cur12" data-section-type="video"><a class="posCatalog_name">基本概念</a><span class="icon_Completed" aria-label="已完成">✓</span></div>
+  <div class="posCatalog_select firstLayer" id="cur20"><span class="posCatalog_name">第二章</span></div>
+  <div class="posCatalog_select" id="cur21" data-section-type="practice"><a class="posCatalog_name">随堂练习</a></div>
+</div>
+<main id="content"></main>
+<script>
+  const params = new URLSearchParams(location.search);
+  const section = params.get('chapterId') || '11';
+  const variant = params.get('fixture') || '';
+  const section12 = document.getElementById('cur12');
+  if (variant === 'practice-next' || section === '21') section12.dataset.sectionType = 'practice';
+  if (variant === 'unknown-next') delete section12.dataset.sectionType;
+  if (variant === 'locked-next') section12.setAttribute('aria-disabled', 'true');
+  for (const anchor of document.querySelectorAll('a.posCatalog_name')) {
+    const next = anchor.parentElement.id.slice(3);
+    anchor.href = `/mycourse/studentstudy?courseId=42&chapterId=${next}${variant ? `&fixture=${variant}` : ''}`;
+    anchor.addEventListener('click', () => {
+      sessionStorage.setItem('entries', String(Number(sessionStorage.getItem('entries') ?? '0') + 1));
+    });
+  }
+  document.getElementById('cur' + section).classList.add('posCatalog_active');
+  if (variant === 'spa') section12.querySelector('a').addEventListener('click', (event) => {
+    event.preventDefault();
+    document.querySelector('.posCatalog_active').classList.remove('posCatalog_active');
+    section12.classList.add('posCatalog_active');
+    history.pushState(null, '', section12.querySelector('a').href);
+    addVideo();
+  });
+  const content = document.getElementById('content');
+  const addVideo = () => {
+    const video = document.createElement('video');
+    video.controls = true;
+    let paused = true;
+    let ended = false;
+    Object.defineProperties(video, {
+      paused: { get: () => paused }, ended: { get: () => ended },
+      readyState: { get: () => 4 }, duration: { get: () => 12 },
+      currentTime: { get: () => ended ? 12 : 5 },
+    });
+    video.play = async () => {
+      if (variant === 'blocked' && !window.allowPlayback) throw new DOMException('Blocked', 'NotAllowedError');
+      paused = false;
+      ended = false;
+      video.dispatchEvent(new Event('playing'));
+    };
+    video.pause = () => {
+      paused = true;
+      video.dispatchEvent(new Event('pause'));
+    };
+    video.finish = () => {
+      paused = true;
+      ended = true;
+      video.dispatchEvent(new Event('ended'));
+    };
+    content.replaceChildren(video);
+    return video;
+  };
+  window.addVideo = addVideo;
+  if (section === '21') {
+    const frame = document.createElement('iframe');
+    frame.id = 'iframe';
+    frame.title = '章节练习';
+    frame.src = '/mooc-ans/knowledge/cards?knowledgeId=21';
+    content.append(frame);
+  } else if (variant === 'frame-video' || variant === 'cross-frame') {
+    const frame = document.createElement('iframe');
+    frame.id = 'iframe';
+    frame.title = '播放器';
+    frame.src = variant === 'cross-frame' ? 'https://other.example/embedded' : '/ananas/modules/video/index.html';
+    content.append(frame);
+  } else if (variant !== 'delayed') addVideo();
+</script>
