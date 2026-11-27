@@ -18,6 +18,10 @@
   if (variant === 'practice-next' || section === '21') section12.dataset.sectionType = 'practice';
   if (variant === 'unknown-next') delete section12.dataset.sectionType;
   if (variant === 'locked-next') section12.setAttribute('aria-disabled', 'true');
+  if (variant === 'pdf-next' || (section === '12' && variant.startsWith('pdf-'))) section12.dataset.sectionType = 'pdf';
+  if (section === '12' && variant.startsWith('pdf-')) {
+    section12.querySelector('.icon_Completed').outerHTML = '<span class="jobUnfinishCount">1</span>';
+  }
   for (const anchor of document.querySelectorAll('a.posCatalog_name')) {
     const next = anchor.parentElement.id.slice(3);
     anchor.href = `/mycourse/studentstudy?courseId=42&chapterId=${next}${variant ? `&fixture=${variant}` : ''}`;
@@ -76,4 +80,12 @@
     frame.src = variant === 'cross-frame' ? 'https://other.example/embedded' : '/ananas/modules/video/index.html';
     content.append(frame);
   } else if (variant !== 'delayed') addVideo();
+  if ((section === '12' && variant.startsWith('pdf-')) || variant === 'mixed-pdf') {
+    if (variant !== 'mixed-pdf') content.replaceChildren();
+    const frame = document.createElement('iframe');
+    frame.id = 'pdf-frame';
+    frame.title = 'PDF 阅读器';
+    frame.src = variant === 'pdf-unavailable' ? 'https://other.example/test.pdf' : '/ananas/modules/pdf/index.html';
+    content.append(frame);
+  }
 </script>

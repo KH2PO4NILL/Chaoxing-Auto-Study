@@ -63,10 +63,11 @@ export function nextSection(document: Document, identity: SectionIdentity): Next
     || (!group && !heading && next.dataset.chapterId !== identity.chapterId)) return { reason: '下一项目录信息无法确认。' };
   if (!visible(next) || next.matches(selectors.locked) || next.querySelector(selectors.locked)
     || /未开放|未解锁|已锁定/.test(textOf(next))) return { reason: '下一节未开放或已锁定。' };
-  const badge = next.querySelector('[data-task-type], .task-type, .catalog_type, [title="视频"], [aria-label="视频"], [title="章节测验"], [aria-label="章节测验"]');
+  const badge = next.querySelector('[data-task-type], .task-type, .catalog_type, [title="视频"], [aria-label="视频"], [title="章节测验"], [aria-label="章节测验"], [title="PDF" i], [title="文档"]');
   const type = (next.dataset.sectionType || next.dataset.type || badge?.getAttribute('data-task-type')
     || badge?.getAttribute('aria-label') || badge?.getAttribute('title') || textOf(badge)).trim();
   if (/^(?:practice|quiz|work|章节测验|章节练习|练习|测验)$/i.test(type)) return { reason: '下一项是练习，请手动处理。' };
+  if (/^(?:pdf|文档|阅读)$/i.test(type)) return { reason: '下一项是 PDF 阅读，请从课程目录打开。' };
   if (!/^(?:video|视频|视频课)$/i.test(type)) return { reason: '下一项未明确标记为视频，请从课程目录选择。' };
   const action = next.matches('a, button') ? next : next.querySelector<HTMLElement>(selectors.action);
   if (!action || !visible(action) || action.matches(':disabled') || action.hasAttribute('download')

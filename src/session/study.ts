@@ -1,5 +1,6 @@
 import { aiMessage, type AiClient } from '../ai/client';
 import { Continuation } from '../playback/continuation';
+import { Reading } from '../playback/reading';
 import { Playback, type PlaybackView } from '../playback/task';
 import type { Chaoxing } from '../platform/chaoxing/adapter';
 import { sameSection, type CourseContext, type Question } from '../platform/chaoxing/types';
@@ -9,6 +10,7 @@ import type { PlaybackMode, ServiceInput, Settings, SettingsView } from '../sett
 export interface StudyView {
   context: CourseContext;
   playback: PlaybackView;
+  reading: ReturnType<Reading['view']>;
   practice: PracticeView;
   settings: SettingsView;
   checking: boolean;
@@ -21,6 +23,7 @@ interface Scope {
   kind: CourseContext['kind'];
   question: Question;
   playback: Playback;
+  reading: Reading;
   practice: Practice;
   previousMedia?: { element: HTMLVideoElement; source: string };
 }
@@ -57,6 +60,7 @@ export class StudySession {
   private manualNavigation(): void {
     this.continuation.clear();
     this.scope?.practice.invalidate('');
+    this.scope?.reading.stop('已停止 PDF 阅读。');
     const playback = this.scope?.playback;
     if (playback && playback.view(this.scope?.context).state !== 'idle') playback.stop();
   }
@@ -107,7 +111,8 @@ export class StudySession {
         enter: (action) => this.page.enter(action) }, this.continuation, update);
       const practice = new Practice(() => this.question(version), (snapshot, ids) => this.page.fill(snapshot, ids),
         this.settings, this.client, update);
-      this.scope = { version, context, kind: context.kind, question: unavailable, playback, practice, previousMedia };
+      const reading = new Reading(() => this.live(version), update);
+      this.scope = { version, context, kind: context.kind, question: unavailable, playback, reading, practice, previousMedia };
       if (old) this.watch();
       if (resume) playback.resumeHandoff();
     }
@@ -118,6 +123,7 @@ export class StudySession {
     if (scope.context.media) scope.previousMedia = undefined;
     scope.question = scope.context.identity ? this.page.question() : unavailable;
     scope.playback.sync(scope.context);
+    scope.reading.sync(scope.context);
     scope.practice.sync(scope.question);
     this.render();
   }
@@ -125,8 +131,8 @@ export class StudySession {
   private render(): void {
     const scope = this.scope;
     if (!scope) { this.publish(); return; }
-    const { playback, practice, context, question } = scope;
-    this.publish({ context, playback: playback.view(context), practice: practice.view(question),
+    const { playback, reading, practice, context, question } = scope;
+    this.publish({ context, playback: playback.view(context), reading: reading.view(context), practice: practice.view(question),
       settings: this.settings.view(), checking: Boolean(this.check), settingsMessage: this.settingsMessage });
   }
 
@@ -134,6 +140,7 @@ export class StudySession {
     const scope = this.scope;
     this.scope = undefined;
     scope?.playback.dispose();
+    scope?.reading.dispose();
     scope?.practice.invalidate('', false);
     this.check?.abort();
     this.check = undefined;
@@ -152,7 +159,10 @@ export class StudySession {
   start(): void { this.scope?.playback.start(this.settings.view().mode); }
   pause(): void { this.scope?.playback.pause(); }
   stop(): void { this.scope?.playback.stop(); }
+  readPdf(): void { this.scope?.reading.start(); }
+  pausePdf(): void { this.scope?.reading.stop(); }
   prepare(): void { this.scope?.practice.prepare(); }
+  attachScreenshot(file: File): void { void this.scope?.practice.attachScreenshot(file); }
   send(): void { void this.scope?.practice.send(); }
   cancel(): void { this.scope?.practice.invalidate('已取消查询。'); }
   fill(): void { this.scope?.practice.fill(); this.refresh(); }
