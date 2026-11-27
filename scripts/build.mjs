@@ -12,7 +12,7 @@ const metadata = [
   '// @namespace    https://github.com/KH2PO4NILL/Chaoxing-Auto-Study',
   `// @version      ${version}`,
   '// @license      MIT',
-  '// @description  在学习通课程页播放视频、阅读 PDF 和查询章节练习建议',
+  '// @description  在学习通课程页使用 AI 聊天、截图查题、播放视频和阅读 PDF',
   ...matches,
   '// @match        https://pan-yz.chaoxing.com/screen/v2/file_*',
   '// @grant        GM_getValue',

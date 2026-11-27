@@ -7,8 +7,9 @@ import type { ServiceConfig, Settings } from '../settings/store';
 import { readScreenshot } from './screenshot';
 
 interface Query {
-  question: QuestionSnapshot;
+  question?: QuestionSnapshot;
   config: ServiceConfig;
+  screenshotMode: boolean;
   screenshot?: string;
 }
 
@@ -33,37 +34,49 @@ export class Practice {
   private writing = false;
 
   constructor(private readonly read: () => Question, private readonly write: (question: QuestionSnapshot, ids: string[]) => FillResult,
-    private readonly settings: Settings, private readonly client: AiClient, private readonly changed: () => void) {}
+    private readonly screenshotAvailable: () => boolean, private readonly settings: Settings,
+    private readonly client: AiClient, private readonly changed: () => void) {}
 
   view(question: Question): PracticeView {
     return { question, review: this.review, loadingScreenshot: Boolean(this.screenshotAttempt),
       busy: Boolean(this.request), suggestion: this.result?.suggestion,
-      canFill: Boolean(this.result), message: this.message, filled: this.filled };
+      canFill: Boolean(this.result?.query.question && 'optionIds' in this.result.suggestion), message: this.message, filled: this.filled };
   }
 
   private matches(original: QuestionSnapshot, current: Question): boolean {
     return 'snapshot' in current && sameQuestion(original, current.snapshot) && sameSelection(original.selected, current.snapshot.selected);
   }
 
-  sync(question: Question): void {
-    if (this.writing) return;
-    const original = (this.review ?? this.request?.query ?? this.result?.query)?.question;
-    if (original && !this.matches(original, question)) this.invalidate('题目、选项或当前选择已变化，请重新查询。');
+  private isCurrent(query: Query, current: Question, screenshotAvailable: boolean): boolean {
+    return (!query.screenshotMode || screenshotAvailable) && (!query.question || this.matches(query.question, current));
   }
 
-  prepare(): void {
+  sync(question: Question, screenshotAvailable: boolean): void {
+    if (this.writing) return;
+    const query = this.review ?? this.request?.query ?? this.result?.query;
+    if (query && !this.isCurrent(query, question, screenshotAvailable)) this.invalidate('题目、选项或当前选择已变化，请重新查询。');
+  }
+
+  prepare(screenshotMode = false): void {
+    if (this.request) return;
     this.invalidate('');
     const question = this.read();
     const config = this.settings.service();
-    if (!('snapshot' in question)) this.message = question.reason;
+    const snapshot = 'snapshot' in question ? question.snapshot : undefined;
+    if ((screenshotMode || snapshot?.requiresScreenshot) && !this.screenshotAvailable()) {
+      this.message = '请在学习通课程页使用截图查询。';
+    } else if (!screenshotMode && 'reason' in question) this.message = question.reason;
     else if (!config || !this.settings.view().hasKey) this.message = '请先在设置中保存服务地址、模型和密钥。';
-    else this.review = { question: question.snapshot, config };
+    else this.review = { question: screenshotMode && !snapshot?.requiresScreenshot ? undefined : snapshot,
+      config, screenshotMode: screenshotMode || Boolean(snapshot?.requiresScreenshot) };
     this.changed();
   }
 
   async attachScreenshot(file: File): Promise<void> {
+    if (this.request) return;
+    if (!this.review?.screenshotMode) this.prepare(true);
     const review = this.review;
-    if (!review?.question.requiresScreenshot) return;
+    if (!review?.screenshotMode) return;
     const attempt = {};
     this.screenshotAttempt = attempt;
     review.screenshot = undefined;
@@ -72,7 +85,7 @@ export class Practice {
     try {
       const screenshot = await readScreenshot(file);
       if (this.screenshotAttempt !== attempt) return;
-      if (!this.matches(review.question, this.read())) {
+      if (!this.isCurrent(review, this.read(), this.screenshotAvailable())) {
         this.invalidate('题目、选项或当前选择已变化，请重新查询。');
         return;
       }
@@ -89,15 +102,17 @@ export class Practice {
 
   async send(): Promise<void> {
     const query = this.review;
-    if (!query || (query.question.requiresScreenshot && !query.screenshot)) return;
+    if (!query || (query.screenshotMode && !query.screenshot)) return;
+    const { question, screenshot } = query;
+    if (!question && !screenshot) return;
     this.review = undefined;
-    if (!this.matches(query.question, this.read())) {
+    if (!this.isCurrent(query, this.read(), this.screenshotAvailable())) {
       this.invalidate('题目、选项或当前选择已变化，请重新查询。');
       return;
     }
     const active = { query, controller: new AbortController() };
     this.request = active;
-    const groups = [{ ...query.question.stem, id: '题干' }, ...query.question.options];
+    const groups = question && !query.screenshotMode ? [{ ...question.stem, id: '题干' }, ...question.options] : [];
     const attachments = groups.flatMap(({ id, media }) => media.map((item, index) => ({
       item, location: `${id} · 附件 ${index + 1}`,
     })));
@@ -106,15 +121,15 @@ export class Practice {
     try {
       const signal = active.controller.signal;
       const visuals: VisualInput[] = [];
-      if (query.screenshot) {
-        visuals.push({ location: '用户提供的本题截图', data: query.screenshot });
+      if (screenshot && question) visuals.push({ location: '用户提供的本题截图', data: screenshot });
+      if (screenshot) {
         query.screenshot = undefined;
       }
       if (attachments.length) {
         const frames = await Promise.all(attachments.map(async ({ item, location }) =>
           (await captureQuestionMedia(item, signal)).map((frame) => ({ ...frame, location }))));
         if (this.request !== active) return;
-        if (!this.matches(query.question, this.read())) {
+        if (!this.isCurrent(query, this.read(), this.screenshotAvailable())) {
           this.invalidate('题目、选项或当前选择已变化，请重新查询。');
           return;
         }
@@ -122,18 +137,19 @@ export class Practice {
         this.message = '正在查询模型。';
         this.changed();
       }
-      const suggestion = await this.client.query(query.config, query.question, visuals, signal);
+      const suggestion = question ? await this.client.query(query.config, question, visuals, signal)
+        : await this.client.queryScreenshot(query.config, screenshot!, signal);
       if (this.request !== active) return;
-      if (!this.matches(query.question, this.read())) {
+      if (!this.isCurrent(query, this.read(), this.screenshotAvailable())) {
         this.invalidate('题目、选项或当前选择已变化，请重新查询。');
         return;
       }
       this.result = { query, suggestion };
-      this.message = '模型建议已返回，请核对后决定是否填入。';
+      this.message = question ? '模型建议已返回，请核对后决定是否填入。' : '请核对建议后在学习通选择答案。';
     } catch (error) {
       if (this.request === active) {
         this.message = error instanceof QuestionMediaError ? error.message : aiMessage(error);
-        if ((attachments.length || query.question.requiresScreenshot)
+        if ((attachments.length || query.screenshotMode)
           && error instanceof AiError && [400, 415, 422].includes(error.status ?? 0)) {
           this.message += ' 请确认模型和接口支持 Chat Completions 图片输入。';
         }
@@ -149,15 +165,16 @@ export class Practice {
 
   fill(): void {
     const result = this.result;
-    if (!result) return;
+    const question = result?.query.question;
+    if (!result || !question || !('optionIds' in result.suggestion)) return;
     this.result = undefined;
-    if (!this.matches(result.query.question, this.read())) {
+    if (!this.isCurrent(result.query, this.read(), this.screenshotAvailable())) {
       this.invalidate('题目、选项或当前选择已变化，请重新查询。');
       return;
     }
     this.writing = true;
     try {
-      const response = this.write(result.query.question, result.suggestion.optionIds);
+      const response = this.write(question, result.suggestion.optionIds);
       this.message = response.message;
       this.filled = response.selected;
     } finally { this.writing = false; }

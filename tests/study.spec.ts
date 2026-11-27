@@ -15,9 +15,17 @@ const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers
 
 test.beforeEach(async ({ page }) => {
   await page.route('https://mooc1.chaoxing.com/**', (route) => {
-    const path = new URL(route.request().url()).pathname;
+    const url = new URL(route.request().url());
+    const path = url.pathname;
     if (path.endsWith('/studentstudy')) return route.fulfill({ contentType: 'text/html; charset=utf-8', body: courseHtml });
-    if (path.endsWith('/knowledge/cards')) return route.fulfill({ contentType: 'text/html', body: '<iframe src="/mooc-ans/work/doHomeWorkNew" title="题目"></iframe>' });
+    if (path.endsWith('/knowledge/cards')) return route.fulfill({ contentType: 'text/html', body: url.searchParams.has('fixture')
+      ? '<iframe src="/mooc2/work/dowork" title="标准题面"></iframe>' : '<iframe src="/mooc-ans/work/doHomeWorkNew" title="题目"></iframe>' });
+    if (path.endsWith('/work/dowork')) return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html>
+      <fieldset id="modern-question">
+        <legend>双绞线互相绞合的作用是什么？</legend>
+        <div><input type="radio" id="option-a" name="choice" value="A" hidden><label for="option-a">降低信号干扰</label></div>
+        <div><input type="radio" id="option-b" name="choice" value="B"><label for="option-b">提高传输速度</label></div>
+      </fieldset>` });
     if (path.endsWith('/work/doHomeWorkNew')) return route.fulfill({ contentType: 'text/html; charset=utf-8', body: practiceHtml });
     if (path.endsWith('.svg')) return route.fulfill({ contentType: 'image/svg+xml',
       body: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="${path.includes('reference') ? 'blue' : 'red'}"/></svg>` });
@@ -62,12 +70,18 @@ test.beforeEach(async ({ page }) => {
 
 async function openPanel(page: Page) {
   const toggle = page.locator('#toggle');
-  await expect(toggle).toBeVisible();
+  await expect(toggle).toBeAttached();
   if (await toggle.getAttribute('aria-expanded') === 'false') await toggle.click();
+  await expect(page.getByRole('complementary', { name: '学习助手' })).toBeVisible();
+}
+
+async function openPlayback(page: Page) {
+  await openPanel(page);
+  await page.getByRole('tab', { name: '播放', exact: true }).click();
 }
 
 async function start(page: Page, chapter = false) {
-  await openPanel(page);
+  await openPlayback(page);
   if (chapter) await page.getByLabel('播放模式').selectOption('chapter');
   await page.getByRole('button', { name: '开始', exact: true }).click();
   await expect(page.locator('#toggle')).toContainText('播放中');
@@ -133,6 +147,43 @@ test('A1 · the bundle mounts once on the study page and leaves other pages alon
   }
 });
 
+test('A1 · the right sidebar keeps its navigation accessible when the viewport shrinks', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(course('21'));
+  const toggle = page.locator('#toggle');
+  const sidebar = page.getByRole('complementary', { name: '学习助手' });
+  await expect(toggle).toBeVisible();
+  await expect(sidebar).toBeHidden();
+  await toggle.press('Enter');
+  await expect(sidebar).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'AI 聊天' })).toBeFocused();
+  const desktop = (await sidebar.boundingBox())!;
+  expect(desktop.y).toBe(0);
+  expect(desktop.height).toBe(720);
+  expect(desktop.x + desktop.width).toBe(1280);
+  await page.getByRole('tab', { name: 'AI 聊天' }).press('ArrowRight');
+  await page.getByRole('tab', { name: '播放' }).press('ArrowRight');
+  await expect(page.getByRole('tab', { name: '练习' })).toBeFocused();
+  await page.getByRole('tab', { name: '练习' }).press('Escape');
+  await expect(sidebar).toBeHidden();
+  await expect(toggle).toBeFocused();
+  await toggle.press('Enter');
+  await expect(page.getByRole('tab', { name: '练习' })).toBeFocused();
+  await page.getByRole('tab', { name: '练习' }).press('ArrowRight');
+  await page.setViewportSize({ width: 350, height: 320 });
+  const compact = (await sidebar.boundingBox())!;
+  expect(compact.height).toBe(320);
+  expect(compact.x).toBeGreaterThanOrEqual(0);
+  expect(compact.x + compact.width).toBe(350);
+  await page.getByRole('button', { name: '清除密钥' }).scrollIntoViewIfNeeded();
+  expect(await page.locator('#sidebar-content').evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await page.getByRole('button', { name: '收起学习助手' }).click();
+  await expect(toggle).toBeVisible();
+  await page.reload();
+  await expect(toggle).toBeVisible();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+});
+
 for (const variant of ['', 'spa']) {
   test(`A2 · ${variant || 'full-page'} handoff consumes one natural end and stops at the chapter boundary`, async ({ page }) => {
     await page.goto(course('11', variant));
@@ -155,7 +206,7 @@ for (const variant of ['', 'spa']) {
 
 test('A3 · delayed mount, native pause, replacement, stop and manual navigation', async ({ page }) => {
   await page.goto(course('11', 'delayed'));
-  await openPanel(page);
+  await openPlayback(page);
   await expect(page.locator('#start')).toBeDisabled();
   await page.evaluate(() => (window as Window & { addVideo(): void }).addVideo());
   await start(page, true);
@@ -180,7 +231,7 @@ test('A3 · delayed mount, native pause, replacement, stop and manual navigation
 
 test('A3 · interaction, autoplay rejection and inaccessible frames show the next action', async ({ page }) => {
   await page.goto(course('11', 'blocked'));
-  await openPanel(page);
+  await openPlayback(page);
   await page.locator('#start').click();
   await expect(page.locator('#play-status')).toContainText('浏览器要求用户操作');
   await page.evaluate(() => { (window as Window & { allowPlayback?: boolean }).allowPlayback = true; });
@@ -197,9 +248,11 @@ test('A3 · interaction, autoplay rejection and inaccessible frames show the nex
   await page.getByRole('button', { name: '继续' }).click();
   await expect(page.locator('#toggle')).toContainText('播放中');
   await page.goto(course('11', 'cross-frame'));
+  await openPlayback(page);
   await expect(page.locator('#play-status')).toContainText('请使用原播放器');
   await expect(page.locator('#start')).toBeDisabled();
   await page.goto(course('11', 'frame-video'));
+  await openPlayback(page);
   await expect(page.locator('#start')).toBeEnabled();
   await expect(page.locator('#chaoxing-auto-study-host')).toHaveCount(1);
 });
@@ -283,6 +336,7 @@ test('A5 · incomplete rows and exam frames cannot be queried', async ({ page })
   await frame(page).locator('#exercise').evaluate((form) => form.setAttribute('data-assessment', 'exam'));
   await expect(page.locator('#stem')).toContainText('请在章节练习中点击');
   await expect(page.locator('#query')).toBeDisabled();
+  await expect(page.getByRole('button', { name: '截图查询' })).toBeHidden();
 });
 
 test('A4 · images in the stem and image-only options are sent only after confirmation and map back to the correct option', async ({ page }) => {
@@ -370,8 +424,13 @@ test('A4 · a special-font question can send a previewed screenshot without the 
   const send = page.getByRole('button', { name: '确认查询' });
   await expect(send).toBeDisabled();
   const image = await frame(page).locator('#q7').screenshot();
-  await page.getByLabel('选择截图文件').setInputFiles({ name: 'question.png', mimeType: 'image/png', buffer: image });
+  const [chooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    page.getByRole('button', { name: '选择截图文件' }).click(),
+  ]);
+  await chooser.setFiles({ name: 'question.png', mimeType: 'image/png', buffer: image });
   await expect(page.getByAltText('待发送的题目截图')).toBeVisible();
+  await expect(page.getByRole('button', { name: '更换截图' })).toBeVisible();
   expect(payloads).toHaveLength(0);
   await send.click();
   await expect(page.locator('#explanation')).toHaveText('降低信号干扰。');
@@ -403,11 +462,40 @@ test('A4 · a special-font question can send a previewed screenshot without the 
   await expect(frame(page).locator('#submitted')).toHaveText('未提交');
 });
 
+test('A4 · a pasted screenshot can be queried without a recognized question', async ({ page }) => {
+  const inputs: unknown[] = [];
+  await mockAi(page, async (route, request) => {
+    inputs.push(request.postDataJSON().messages[1].content);
+    await route.fulfill({ headers: cors, json: { choices: [{ message: {
+      content: JSON.stringify({ answer: 'B．7', explanation: '7 只能被 1 和它自身整除。' }),
+    } }] } });
+  });
+  await page.goto(course('21'));
+  await service(page);
+  const tab = page.getByRole('tab', { name: '练习' });
+  await tab.click();
+  await expect(page.getByRole('button', { name: '查询答案' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '截图查询' })).toBeEnabled();
+  const image = await frame(page).locator('#q1').screenshot();
+  await tab.evaluate((target, bytes) => {
+    const clipboardData = new DataTransfer();
+    clipboardData.items.add(new File([new Uint8Array(bytes)], 'clipboard.png', { type: 'image/png' }));
+    target.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, clipboardData }));
+  }, [...image]);
+  await expect(page.getByAltText('待发送的题目截图')).toBeVisible();
+  expect(inputs).toHaveLength(0);
+  await page.getByRole('button', { name: '确认查询' }).click();
+  await expect(page.locator('#suggested-options li')).toHaveText('B．7');
+  await expect(page.getByRole('button', { name: '填入本题' })).toBeHidden();
+  await expect(frame(page).locator('#q1 input[value=B]')).not.toBeChecked();
+  expect(inputs).toEqual([[{ type: 'image_url', image_url: { url: expect.stringMatching(/^data:image\/jpeg;base64,/) } }]]);
+});
+
 test('A8 · the nested cross-origin PDF reader scrolls, pauses, resumes and leaves the platform marker authoritative', async ({ page }) => {
   await page.clock.install();
   await page.goto(course('12', 'pdf-ready'));
   await page.clock.pauseAt(await page.evaluate(() => Date.now() + 100));
-  await openPanel(page);
+  await openPlayback(page);
   await page.getByRole('button', { name: '开始阅读' }).click();
   await expect(page.locator('#pdf-position')).toHaveText('PDF 滚动位置 0%');
   const reader = page.frameLocator('#pdf-frame').frameLocator('#panView');
@@ -434,7 +522,7 @@ test('A8 · a replaced PDF reader requires a fresh start', async ({ page }) => {
   await page.clock.install();
   await page.goto(course('12', 'pdf-ready'));
   await page.clock.pauseAt(await page.evaluate(() => Date.now() + 100));
-  await openPanel(page);
+  await openPlayback(page);
   await page.getByRole('button', { name: '开始阅读' }).click();
   await expect(page.locator('#pdf-position')).toHaveText('PDF 滚动位置 0%');
   await page.frameLocator('#pdf-frame').locator('#panView').evaluate((iframe: HTMLIFrameElement) => iframe.replaceWith(iframe.cloneNode()));
@@ -447,7 +535,7 @@ test('A8 · a replaced PDF reader requires a fresh start', async ({ page }) => {
 
 test('A8 · an inaccessible PDF is reported and mixed sections do not skip an open reader', async ({ page }) => {
   await page.goto(course('12', 'pdf-unavailable'));
-  await openPanel(page);
+  await openPlayback(page);
   await expect(page.locator('#pdf-status')).toContainText('使用学习通原阅读器');
   await expect(page.getByRole('button', { name: '开始阅读' })).toBeDisabled();
   await page.goto(course('11', 'mixed-pdf'));
@@ -571,6 +659,7 @@ test('A7 · old preferences migrate, cleared stored keys stay cleared, and only 
   }, { settingsKey, credentialKey, ai, alpha });
   await mockAi(page, (route) => model(route, ['opt2']));
   await page.goto(course('21'));
+  await openPlayback(page);
   await expect(page.getByLabel('播放模式')).toHaveValue('chapter');
   await query(page, 'q1');
   await expect(page.locator('#suggestion')).toBeVisible();
@@ -579,6 +668,7 @@ test('A7 · old preferences migrate, cleared stored keys stay cleared, and only 
   await expect(page.getByLabel('记住密钥')).toBeChecked();
   await page.getByRole('button', { name: '清除密钥' }).click();
   await page.reload();
+  await openPlayback(page);
   await expect(page.getByLabel('播放模式')).toHaveValue('chapter');
   await page.getByRole('tab', { name: '设置' }).click();
   await expect(page.locator('#key-state')).toContainText('未配置');
@@ -589,4 +679,98 @@ test('A7 · old preferences migrate, cleared stored keys stay cleared, and only 
   }), { settingsKey, credentialKey });
   expect(stored.prefs).toMatchObject({ schemaVersion: 1, mode: 'chapter', collapsed: false });
   expect(stored.key).toBeNull();
+});
+
+test('A9 · chat opens by default, reads a normal framed question and sends follow-up context', async ({ page }) => {
+  const requests: { role: string; content: string }[][] = [];
+  await mockAi(page, async (route, request) => {
+    requests.push(request.postDataJSON().messages);
+    await route.fulfill({ headers: cors, json: { choices: [{ message: { content: '<b>差分接收可以抵消一部分干扰。</b>' } }] } });
+  });
+  await page.goto(course('21', 'standard-question'));
+  await openPanel(page);
+  const input = page.getByRole('textbox', { name: '聊天消息' });
+  await expect(input).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'AI 聊天' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('button', { name: '发送', exact: true })).toBeDisabled();
+  await service(page);
+  await page.getByRole('tab', { name: 'AI 聊天' }).click();
+  await expect(frame(page).locator('legend')).toBeVisible();
+  await expect(page.locator('#stem')).toHaveText('双绞线互相绞合的作用是什么？');
+  await page.getByRole('button', { name: '读取本题' }).click();
+  const question = '双绞线互相绞合的作用是什么？\nA．降低信号干扰\nB．提高传输速度';
+  await expect(input).toHaveValue(question);
+  expect(requests).toHaveLength(0);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await expect(page.locator('#chat-messages [data-role=assistant]')).toHaveCount(1);
+  await expect(page.locator('#chat-messages b')).toHaveCount(0);
+  await input.fill('能举个例子吗？');
+  await input.press('Control+Enter');
+  await expect(page.locator('#chat-messages [data-role=assistant]')).toHaveCount(2);
+  expect(requests[1]?.slice(1)).toEqual([
+    { role: 'user', content: question },
+    { role: 'assistant', content: '<b>差分接收可以抵消一部分干扰。</b>' },
+    { role: 'user', content: '能举个例子吗？' },
+  ]);
+  await expect(frame(page).locator('#option-a')).not.toBeChecked();
+});
+
+test('A9 · page capture crops the confirmed tab into the chat draft and releases the stream', async ({ page }) => {
+  await page.addInitScript(() => {
+    const devices = navigator.mediaDevices;
+    let handle = '';
+    Object.defineProperties(devices, {
+      setCaptureHandleConfig: { value: (config: { handle?: string }) => { handle = config.handle ?? ''; } },
+      getDisplayMedia: { value: async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = innerWidth;
+        canvas.height = innerHeight;
+        const context = canvas.getContext('2d')!;
+        const paint = () => {
+          context.fillStyle = '#dc2626';
+          context.fillRect(0, 0, canvas.width, canvas.height);
+        };
+        paint();
+        const stream = canvas.captureStream(20);
+        const track = stream.getVideoTracks()[0]!;
+        const timer = setInterval(paint, 40);
+        const stop = track.stop.bind(track);
+        Object.defineProperties(track, {
+          getCaptureHandle: { value: () => document.body.dataset.wrongCapture ? null : { handle } },
+          stop: { value: () => { stop(); clearInterval(timer); document.body.dataset.captureStopped = 'true'; } },
+        });
+        return stream;
+      } },
+    });
+  });
+  const received: unknown[] = [];
+  await mockAi(page, async (route, request) => {
+    received.push(request.postDataJSON().messages[1].content);
+    await route.fulfill({ headers: cors, json: { choices: [{ message: { content: '截图已读取。' } }] } });
+  });
+  await page.goto(course('21'));
+  await service(page);
+  await page.getByRole('tab', { name: 'AI 聊天' }).click();
+  await page.getByRole('button', { name: '框选截图' }).click();
+  const layer = page.getByRole('dialog', { name: '拖动框选截图' });
+  await expect(layer).toBeVisible();
+  await expect(page.locator('body')).toHaveAttribute('data-capture-stopped', 'true');
+  await page.mouse.move(160, 170);
+  await page.mouse.down();
+  await page.mouse.move(340, 270, { steps: 5 });
+  await page.mouse.up();
+  await expect(layer).toBeHidden();
+  const draftImage = page.getByAltText('待发送的截图');
+  await expect(draftImage).toBeVisible();
+  expect(received).toHaveLength(0);
+  await expect.poll(() => draftImage.evaluate((img: HTMLImageElement) => [img.naturalWidth, img.naturalHeight])).toEqual([180, 100]);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await expect(page.locator('#chat-messages [data-role=assistant]')).toContainText('截图已读取');
+  expect(received).toEqual([[{ type: 'text', text: '请阅读截图并解释这道题。' },
+    { type: 'image_url', image_url: { url: expect.stringMatching(/^data:image\/jpeg;base64,/) } }]]);
+  await page.evaluate(() => { document.body.dataset.wrongCapture = 'true'; });
+  await page.getByRole('button', { name: '框选截图' }).click();
+  await expect(page.locator('#chat-status')).toContainText('选择当前学习通标签页');
+  await expect(draftImage).toBeHidden();
+  expect(received).toHaveLength(1);
 });

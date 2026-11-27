@@ -28,6 +28,15 @@ function readControl(element: HTMLElement, expectedType: Control['type']): Contr
   }
 }
 
+function optionControl(row: HTMLElement, type?: QuestionType): Control | undefined {
+  const nodes = row.matches(selectors.control) ? [row] : Array.from(row.querySelectorAll<HTMLElement>(selectors.control));
+  const native = nodes.filter((element) => element.tagName === 'INPUT');
+  const candidates = native.length ? native : nodes;
+  const element = candidates.length === 1 ? candidates[0] : undefined;
+  if (!element || (!type && !element.matches('input, [role="radio"], [role="checkbox"]'))) return undefined;
+  return readControl(element, type === 'multiple' ? 'checkbox' : 'radio');
+}
+
 function readMedia(root: Element | null): QuestionMedia[] | undefined {
   const media: QuestionMedia[] = [];
   for (const node of root?.querySelectorAll<HTMLImageElement | HTMLVideoElement | HTMLIFrameElement>(selectors.questionMedia) ?? []) {
@@ -64,7 +73,9 @@ export class Questions {
   private readonly questionIds = new WeakMap<Element, number>();
 
   focus(target: Element): void {
-    const question = target.closest(selectors.question);
+    let question = target.closest(selectors.question);
+    for (let parent = question?.parentElement?.closest(selectors.question); parent;
+      parent = parent.parentElement?.closest(selectors.question)) question = parent;
     if (question) this.selected = question;
   }
 
@@ -73,7 +84,8 @@ export class Questions {
   private root(documents: readonly Document[]): Element | undefined {
     const available = documents.flatMap((doc) => {
       if (/\/(?:exam|exam-ans)(?:\/|$)/i.test(new URL(doc.URL).pathname) || doc.querySelector(selectors.assessment)) return [];
-      return Array.from(doc.querySelectorAll(selectors.question)).filter(visible);
+      return Array.from(doc.querySelectorAll(selectors.question)).filter((element) =>
+        visible(element) && !element.parentElement?.closest(selectors.question));
     });
     const active = available.filter((element) => element.matches(selectors.activeQuestion));
     if (active.length === 1) return active[0];
@@ -84,22 +96,29 @@ export class Questions {
   private read(documents: readonly Document[]): (Question & { controls?: Control[] }) {
     const root = this.root(documents);
     if (!root) return { reason: '请在章节练习中点击要查询的题目。' };
-    const typeInput = root.querySelector<HTMLInputElement>('input[id^="answertype"]');
-    const stemNode = root.querySelector(selectors.stem);
-    const rawType = root.getAttribute('data-question-type') || typeInput?.value
-      || textOf(root.querySelector('[data-question-type-label]'));
-    const type = Object.hasOwn(typeNames, rawType) ? typeNames[rawType] : undefined;
-    if (!type) return { reason: '此题型不适用。请选择单选、多选或判断题。' };
+    const typeInput = root.querySelector<HTMLInputElement>('input[id^="answertype" i], input[name^="answertype" i]');
+    const stemNode = root.querySelector(selectors.stem) ?? root.querySelector(selectors.stemContainer);
+    const rawType = (root.getAttribute('data-question-type') || typeInput?.value
+      || textOf(root.querySelector('[data-question-type-label]'))).trim().toLowerCase().replace(/^[【\[（(]|[】\]）)]$/g, '');
+    const declaredType = Object.hasOwn(typeNames, rawType) ? typeNames[rawType] : undefined;
     const requiresScreenshot = Boolean(root.closest(selectors.encodedQuestionText))
       || Array.from(root.querySelectorAll(selectors.encodedQuestionText)).some(visible);
-    if (!requiresScreenshot && Array.from(root.querySelectorAll(selectors.unsupportedQuestionContent)).some(visible)) {
-      return { reason: '这道题包含暂不支持的嵌入媒体或公式，请在学习通处理。' };
-    }
     const rows = Array.from(root.querySelectorAll<HTMLElement>(selectors.option)).filter((row) => {
       const parentOption = row.parentElement?.closest(selectors.option);
-      return (!parentOption || !root.contains(parentOption)) && visible(row);
+      const labels = row.tagName === 'INPUT' ? (row as HTMLInputElement).labels : undefined;
+      return (!parentOption || !root.contains(parentOption)) && (visible(row) || Array.from(labels ?? []).some(visible));
     });
-    const stemMedia = requiresScreenshot ? [] : readMedia(stemNode?.closest('.Zy_TItle') ?? stemNode);
+    const controlsFound = rows.map((row) => optionControl(row, declaredType));
+    const type = rawType ? declaredType
+      : controlsFound.length && controlsFound.every((control) => control?.type === 'checkbox') ? 'multiple'
+      : controlsFound.length && controlsFound.every((control) => control?.type === 'radio') ? 'single' : undefined;
+    if (!type) return { reason: rawType ? '此题型不适用。请选择单选、多选或判断题。' : '题型或选项控件未能识别，可试试框选截图。' };
+    const stemContent = stemNode?.closest(selectors.stemContainer) ?? stemNode;
+    if (!requiresScreenshot && [stemContent, ...rows].some((section) => section
+      && Array.from(section.querySelectorAll(selectors.unsupportedQuestionContent)).some(visible))) {
+      return { reason: '题目包含嵌入媒体或公式，可用截图查询。' };
+    }
+    const stemMedia = requiresScreenshot ? [] : readMedia(stemContent);
     if (!stemMedia) return { reason: '题干包含图片或视频，但浏览器尚无法读取其来源。' };
     const stem = { text: textOf(stemNode), media: stemMedia };
     if ((!stem.text && !stem.media.length) || rows.length < 2 || (type === 'judgement' && rows.length !== 2)) {
@@ -108,15 +127,12 @@ export class Questions {
     const controls: Control[] = [];
     const options: QuestionSnapshot['options'] = [];
     const selected: string[] = [];
-    for (const row of rows) {
-      const nodes = row.matches(selectors.control) ? [row] : Array.from(row.querySelectorAll<HTMLElement>(selectors.control));
-      // A styled control may expose a role around the native input. Use the native input when present.
-      const native = nodes.filter((element) => element.tagName === 'INPUT');
-      const candidates = native.length ? native : nodes;
+    for (const [index, row] of rows.entries()) {
       const controlType = type === 'multiple' ? 'checkbox' : 'radio';
-      const control = candidates.length === 1 && candidates[0] ? readControl(candidates[0], controlType) : undefined;
-      const text = textOf(row.querySelector(selectors.optionText) ?? row);
-      const media = requiresScreenshot ? [] : readMedia(row);
+      const control = controlsFound[index];
+      const label = row.tagName === 'INPUT' ? Array.from((row as HTMLInputElement).labels ?? []).find(visible) : undefined;
+      const text = textOf(row.querySelector(selectors.optionText) ?? label ?? row);
+      const media = requiresScreenshot ? [] : readMedia(label ?? row);
       if (!media) return { reason: '选项包含图片或视频，但浏览器尚无法读取其来源。' };
       if (!control || (!text && !media.length) || control.type !== controlType) {
         return { reason: '选项内容或控件不完整。' };

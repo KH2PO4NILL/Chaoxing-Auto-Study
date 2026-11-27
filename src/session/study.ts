@@ -1,4 +1,5 @@
 import { aiMessage, type AiClient } from '../ai/client';
+import { Chat, type ChatView } from '../chat/task';
 import { Continuation } from '../playback/continuation';
 import { Reading } from '../playback/reading';
 import { Playback, type PlaybackView } from '../playback/task';
@@ -12,6 +13,7 @@ export interface StudyView {
   playback: PlaybackView;
   reading: ReturnType<Reading['view']>;
   practice: PracticeView;
+  chat: ChatView;
   settings: SettingsView;
   checking: boolean;
   settingsMessage: string;
@@ -25,6 +27,7 @@ interface Scope {
   playback: Playback;
   reading: Reading;
   practice: Practice;
+  chat: Chat;
   previousMedia?: { element: HTMLVideoElement; source: string };
 }
 
@@ -60,6 +63,7 @@ export class StudySession {
   private manualNavigation(): void {
     this.continuation.clear();
     this.scope?.practice.invalidate('');
+    this.scope?.chat.clear(false);
     this.scope?.reading.stop('已停止 PDF 阅读。');
     const playback = this.scope?.playback;
     if (playback && playback.view(this.scope?.context).state !== 'idle') playback.stop();
@@ -81,7 +85,8 @@ export class StudySession {
   }
 
   private question(version: number): Question {
-    if (!this.live(version)?.identity) return unavailable;
+    const context = this.live(version);
+    if (!context?.identity && !context?.questionAvailable) return unavailable;
     return this.page.question();
   }
 
@@ -110,29 +115,31 @@ export class StudySession {
       const playback = new Playback({ live: () => this.live(version), next: (identity) => this.page.next(identity),
         enter: (action) => this.page.enter(action) }, this.continuation, update);
       const practice = new Practice(() => this.question(version), (snapshot, ids) => this.page.fill(snapshot, ids),
-        this.settings, this.client, update);
+        () => Boolean(this.live(version)?.screenshotAvailable), this.settings, this.client, update);
+      const chat = new Chat(this.settings, this.client, () => Boolean(this.live(version)?.screenshotAvailable), update);
       const reading = new Reading(() => this.live(version), update);
-      this.scope = { version, context, kind: context.kind, question: unavailable, playback, reading, practice, previousMedia };
+      this.scope = { version, context, kind: context.kind, question: unavailable, playback, reading, practice, chat, previousMedia };
       if (old) this.watch();
       if (resume) playback.resumeHandoff();
     }
     const scope = this.scope;
     if (!scope) return;
     if (scope.kind === 'unknown') scope.kind = context.kind;
+    if (scope.context.screenshotAvailable && !context.screenshotAvailable) scope.chat.clear(false);
     scope.context = this.currentMedia(context, scope.previousMedia);
     if (scope.context.media) scope.previousMedia = undefined;
-    scope.question = scope.context.identity ? this.page.question() : unavailable;
+    scope.question = scope.context.identity || scope.context.questionAvailable ? this.page.question() : unavailable;
     scope.playback.sync(scope.context);
     scope.reading.sync(scope.context);
-    scope.practice.sync(scope.question);
+    scope.practice.sync(scope.question, scope.context.screenshotAvailable);
     this.render();
   }
 
   private render(): void {
     const scope = this.scope;
     if (!scope) { this.publish(); return; }
-    const { playback, reading, practice, context, question } = scope;
-    this.publish({ context, playback: playback.view(context), reading: reading.view(context), practice: practice.view(question),
+    const { playback, reading, practice, chat, context, question } = scope;
+    this.publish({ context, playback: playback.view(context), reading: reading.view(context), practice: practice.view(question), chat: chat.view(),
       settings: this.settings.view(), checking: Boolean(this.check), settingsMessage: this.settingsMessage });
   }
 
@@ -142,6 +149,7 @@ export class StudySession {
     scope?.playback.dispose();
     scope?.reading.dispose();
     scope?.practice.invalidate('', false);
+    scope?.chat.clear(false);
     this.check?.abort();
     this.check = undefined;
     this.settingsMessage = '';
@@ -161,16 +169,25 @@ export class StudySession {
   stop(): void { this.scope?.playback.stop(); }
   readPdf(): void { this.scope?.reading.start(); }
   pausePdf(): void { this.scope?.reading.stop(); }
-  prepare(): void { this.scope?.practice.prepare(); }
+  prepare(screenshot = false): void { this.scope?.practice.prepare(screenshot); }
   attachScreenshot(file: File): void { void this.scope?.practice.attachScreenshot(file); }
   send(): void { void this.scope?.practice.send(); }
   cancel(): void { this.scope?.practice.invalidate('已取消查询。'); }
   fill(): void { this.scope?.practice.fill(); this.refresh(); }
+  writeChat(text: string): void { this.scope?.chat.write(text); }
+  includeChatQuestion(): void { if (this.scope) this.scope.chat.includeQuestion(this.question(this.scope.version)); }
+  attachChatFile(file: File): void { this.scope?.chat.attachFile(file); }
+  captureChat(read: (signal: AbortSignal) => Promise<string | undefined>): void { this.scope?.chat.capture(read); }
+  removeChatImage(): void { this.scope?.chat.removeImage(); }
+  sendChat(): void { void this.scope?.chat.send(); }
+  stopChat(): void { this.scope?.chat.stop(); }
+  clearChat(): void { this.scope?.chat.clear(); }
 
   private serviceChanged(message: string): void {
     this.check?.abort();
     this.check = undefined;
     this.scope?.practice.invalidate(message, false);
+    this.scope?.chat.clear(false);
   }
 
   storageChanged(key: string): void {

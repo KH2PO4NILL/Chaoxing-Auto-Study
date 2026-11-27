@@ -20,7 +20,7 @@ export function readCatalog(document: Document) {
   const shell = document.querySelector<HTMLElement>(selectors.shell);
   const courseId = identifier(shell?.dataset.courseId || valueOf(document, '#curCourseId') || urlParam(url, 'courseid'));
   const declaredSection = identifier(shell?.dataset.sectionId || valueOf(document, '#curChapterId') || urlParam(url, 'chapterid', 'knowledgeid'));
-  const catalog = document.querySelector(selectors.catalog) ?? document;
+  const catalog = document.getElementById('coursetree') ?? document.querySelector(selectors.catalog) ?? document;
   const rows = Array.from(catalog.querySelectorAll<HTMLElement>(selectors.row)).filter((row) => {
     if (row === shell) return false;
     const parentRow = row.parentElement?.closest(selectors.row);

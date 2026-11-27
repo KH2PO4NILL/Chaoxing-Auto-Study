@@ -37,6 +37,8 @@ export interface CourseContext {
   media?: HTMLVideoElement;
   pdf?: PdfReader;
   hasPractice: boolean;
+  questionAvailable: boolean;
+  screenshotAvailable: boolean;
   blockedMedia: boolean;
   interaction: boolean;
 }
