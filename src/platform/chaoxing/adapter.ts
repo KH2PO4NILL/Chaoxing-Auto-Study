@@ -80,6 +80,7 @@ export class Chaoxing {
       chapterName: catalog.chapterName,
       sectionName: catalog.sectionName,
       progress: catalog.progress,
+      completed: catalog.completed,
       kind,
       media,
       pdf,
@@ -91,9 +92,11 @@ export class Chaoxing {
     };
   }
 
-  question(): Question {
-    return this.questions.snapshot(this.questionDocuments());
+  question(target?: Element): Question {
+    return this.questions.snapshot(this.questionDocuments(), target);
   }
+
+  questionBatch(): ReturnType<Questions['batch']> { return this.questions.batch(this.questionDocuments()); }
 
   private questionDocuments(): Document[] {
     const document = this.window.document;
@@ -103,11 +106,13 @@ export class Chaoxing {
       || Boolean(doc.querySelector(selectors.question)));
   }
 
-  fill(question: QuestionSnapshot, ids: string[]): FillResult {
-    return this.questions.fill(() => this.questionDocuments(), question, ids);
+  fill(question: QuestionSnapshot, ids: string[], target?: Element): FillResult {
+    return this.questions.fill(() => this.questionDocuments(), question, ids, target);
   }
 
-  next(identity: SectionIdentity): NextSection { return nextSection(this.window.document, identity); }
+  next(identity: SectionIdentity, requireVideo: boolean): NextSection {
+    return nextSection(this.window.document, identity, requireVideo);
+  }
 
   enter(action: HTMLElement): void {
     this.automatedEntry = action;

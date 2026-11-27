@@ -186,7 +186,9 @@ test('A1 · the right sidebar keeps its navigation accessible when the viewport 
 
 for (const variant of ['', 'spa']) {
   test(`A2 · ${variant || 'full-page'} handoff consumes one natural end and stops at the chapter boundary`, async ({ page }) => {
+    if (variant) await page.clock.install();
     await page.goto(course('11', variant));
+    if (variant) await page.clock.pauseAt(await page.evaluate(() => Date.now() + 100));
     await start(page, true);
     await video(page).evaluate((element) => {
       const video = element as HTMLVideoElement & { finish(): void };
@@ -194,11 +196,22 @@ for (const variant of ['', 'spa']) {
       video.finish();
       video.finish();
     });
-    await expect(page).toHaveURL(/chapterId=12/);
+    await expect(page.locator('#advance-status')).toContainText('等待学习通确认');
+    if (variant) await page.clock.runFor(12_000);
+    expect(await entries(page)).toBe(null);
+    await page.locator('#cur11 .jobUnfinishCount').evaluate((marker) => { marker.className = 'icon_Completed'; });
+    if (variant) await page.clock.runFor(500);
+    await expect(page.locator('#advance-status')).toContainText('10 秒');
+    if (variant) {
+      await page.clock.runFor(9_000);
+      await expect(page).toHaveURL(/chapterId=11/);
+      await page.clock.runFor(1_000);
+    }
+    await expect(page).toHaveURL(/chapterId=12/, { timeout: 12_000 });
     await expect(page.locator('#toggle')).toContainText('播放中');
     expect(await entries(page)).toBe('1');
     await finish(page);
-    await expect(page.locator('#play-status')).toContainText('已到本章末尾');
+    await expect(page.locator('#advance-status')).toContainText('已到本章末尾');
     await expect(page.locator('#progress')).toContainText('已完成');
     expect(await entries(page)).toBe('1');
   });
@@ -262,7 +275,7 @@ for (const [variant, reason] of [['locked-next', '已锁定'], ['practice-next',
     await page.goto(course('11', variant));
     await start(page, true);
     await finish(page);
-    await expect(page.locator('#play-status')).toContainText(reason!);
+    await expect(page.locator('#advance-status')).toContainText(reason!);
     expect(await entries(page)).toBe(null);
   });
 }
@@ -281,6 +294,42 @@ test('A3 · refresh ignores a matching handoff and clears it', async ({ page }) 
   await page.reload();
   await expect(page.locator('#toggle')).toContainText('待命');
   expect(await page.evaluate(() => sessionStorage.getItem('chaoxing-auto-study.next'))).toBeNull();
+});
+
+test('A10 · explicit next-section mode waits for all tasks, cancels a countdown, and can enter a practice section', async ({ page }) => {
+  await page.clock.install();
+  await page.goto(course('11', 'spa-practice-next'));
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 100));
+  await openPlayback(page);
+  await page.locator('#cur11').evaluate((row) => {
+    row.setAttribute('data-progress', '已完成');
+    const counter = document.createElement('input');
+    counter.type = 'hidden';
+    counter.className = 'jobUnfinishCount';
+    counter.value = '1';
+    row.querySelector('.jobUnfinishCount')!.replaceWith(counter);
+  });
+  await page.getByRole('button', { name: '本节完成后跳转' }).click();
+  await expect(page.locator('#advance-status')).toContainText('等待学习通确认');
+  await page.clock.runFor(12_000);
+  expect(await entries(page)).toBe(null);
+  await page.locator('#cur11 .jobUnfinishCount').evaluate((counter: HTMLInputElement) => {
+    counter.parentElement!.removeAttribute('data-progress');
+    counter.value = '0';
+  });
+  await page.clock.runFor(500);
+  await expect(page.locator('#advance-status')).toContainText('10 秒');
+  await page.getByRole('button', { name: '取消自动跳转' }).click();
+  await page.clock.runFor(12_000);
+  expect(await entries(page)).toBe(null);
+  await page.getByRole('button', { name: '本节完成后跳转' }).click();
+  await page.clock.runFor(9_999);
+  await expect(page).toHaveURL(/chapterId=11/);
+  await page.clock.runFor(1);
+  await expect(page).toHaveURL(/chapterId=12/);
+  await page.clock.runFor(100);
+  await expect(page.locator('#toggle')).toContainText('待命');
+  await expect(page.locator('#advance-status')).toContainText('已到本章末尾');
 });
 
 test('A4 · preview, answer, fill, and edit all three supported question types', async ({ page }) => {
@@ -683,9 +732,10 @@ test('A7 · old preferences migrate, cleared stored keys stay cleared, and only 
 
 test('A9 · chat opens by default, reads a normal framed question and sends follow-up context', async ({ page }) => {
   const requests: { role: string; content: string }[][] = [];
+  const response = '<b>差分接收可以抵消一部分干扰。</b> 行内 $x^2$，独立 $$\\frac{1}{2}$$，也支持 \\(y+1\\)。';
   await mockAi(page, async (route, request) => {
     requests.push(request.postDataJSON().messages);
-    await route.fulfill({ headers: cors, json: { choices: [{ message: { content: '<b>差分接收可以抵消一部分干扰。</b>' } }] } });
+    await route.fulfill({ headers: cors, json: { choices: [{ message: { content: response } }] } });
   });
   await page.goto(course('21', 'standard-question'));
   await openPanel(page);
@@ -704,12 +754,14 @@ test('A9 · chat opens by default, reads a normal framed question and sends foll
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await expect(page.locator('#chat-messages [data-role=assistant]')).toHaveCount(1);
   await expect(page.locator('#chat-messages b')).toHaveCount(0);
+  await expect(page.locator('#chat-messages [data-role=assistant] math')).toHaveCount(3);
+  await expect(page.locator('#chat-messages math mfrac')).toHaveCount(1);
   await input.fill('能举个例子吗？');
   await input.press('Control+Enter');
   await expect(page.locator('#chat-messages [data-role=assistant]')).toHaveCount(2);
   expect(requests[1]?.slice(1)).toEqual([
     { role: 'user', content: question },
-    { role: 'assistant', content: '<b>差分接收可以抵消一部分干扰。</b>' },
+    { role: 'assistant', content: response },
     { role: 'user', content: '能举个例子吗？' },
   ]);
   await expect(frame(page).locator('#option-a')).not.toBeChecked();
@@ -773,4 +825,52 @@ test('A9 · page capture crops the confirmed tab into the chat draft and release
   await expect(page.locator('#chat-status')).toContainText('选择当前学习通标签页');
   await expect(draftImage).toBeHidden();
   expect(received).toHaveLength(1);
+});
+
+test('A11 · automatic practice fills successive questions and preserves selections changed while waiting', async ({ page }) => {
+  const types: string[] = [];
+  let release: (() => void) | undefined;
+  await mockAi(page, async (route, request) => {
+    const { type } = JSON.parse(request.postDataJSON().messages[1].content);
+    types.push(type);
+    if (type === 'single') await new Promise<void>((resolve) => { release = resolve; });
+    try { await model(route, type === 'multiple' ? ['opt1', 'opt3'] : ['opt2']); } catch { /* A stopped request can be gone. */ }
+  });
+  await page.goto(course('21'));
+  await service(page);
+  await page.getByRole('tab', { name: '练习' }).click();
+  await frame(page).locator('#q5,#q6').evaluateAll((items) => { for (const item of items) item.remove(); });
+  const judgement = frame(page).locator('#q3 input[value=false]');
+  const selection = frame(page).locator('#q1 input[value=A]');
+  await judgement.check();
+  await page.getByRole('button', { name: '开始自动答题' }).click();
+  await expect.poll(() => types).toEqual(['single']);
+  await selection.check();
+  release?.();
+  await expect(page.locator('#auto-practice-status')).toContainText('已填入 1 道，跳过 4 道');
+  await expect(selection).toBeChecked();
+  await expect(judgement).toBeChecked();
+  await expect(frame(page).locator('#q2 input[value=A]')).toBeChecked();
+  await expect(frame(page).locator('#q2 input[value=C]')).toBeChecked();
+  await expect(frame(page).locator('#submitted')).toHaveText('未提交');
+  expect(types).toEqual(['single', 'multiple']);
+
+  await selection.evaluate((input: HTMLInputElement) => { input.checked = false; });
+  await page.getByRole('button', { name: '开始自动答题' }).click();
+  await expect.poll(() => types).toEqual(['single', 'multiple', 'single']);
+  await page.getByRole('button', { name: '停止自动答题' }).click();
+  release?.();
+  await expect(page.locator('#auto-practice-status')).toContainText('已停止自动答题');
+  await expect(frame(page).locator('#q1 input[value=B]')).not.toBeChecked();
+});
+
+test('A12 · practice replies render LaTeX as MathML and keep other reply text visible', async ({ page }) => {
+  await mockAi(page, (route) => model(route, ['opt2'], '行内 \\(7=7\\)，独立 \\[\\frac{7}{1}=7\\]。<img src=x>'));
+  await page.goto(course('21'));
+  await service(page);
+  await query(page, 'q1');
+  await expect(page.locator('#explanation math')).toHaveCount(2);
+  await expect(page.locator('#explanation math mfrac')).toHaveCount(1);
+  await expect(page.locator('#explanation')).toContainText('<img src=x>');
+  await expect(page.locator('#explanation img')).toHaveCount(0);
 });

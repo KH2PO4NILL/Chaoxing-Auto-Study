@@ -1,6 +1,6 @@
 import { selectors, textOf, visible } from './dom';
 import { sameQuestion, sameSelection } from './types';
-import type { FillResult, Question, QuestionMedia, QuestionSnapshot, QuestionType } from './types';
+import type { FillResult, Question, QuestionMedia, QuestionSnapshot, QuestionTarget, QuestionType } from './types';
 
 const typeNames: Record<string, QuestionType> = {
   '0': 'single', '1': 'multiple', '3': 'judgement',
@@ -81,20 +81,27 @@ export class Questions {
 
   reset(): void { this.selected = undefined; }
 
-  private root(documents: readonly Document[]): Element | undefined {
-    const available = documents.flatMap((doc) => {
+  private roots(documents: readonly Document[]): Element[] {
+    return documents.flatMap((doc) => {
       if (/\/(?:exam|exam-ans)(?:\/|$)/i.test(new URL(doc.URL).pathname) || doc.querySelector(selectors.assessment)) return [];
       return Array.from(doc.querySelectorAll(selectors.question)).filter((element) =>
         visible(element) && !element.parentElement?.closest(selectors.question));
     });
+  }
+
+  private root(available: Element[]): Element | undefined {
     const active = available.filter((element) => element.matches(selectors.activeQuestion));
     if (active.length === 1) return active[0];
     if (this.selected && available.includes(this.selected)) return this.selected;
     if (available.length === 1) return available[0];
   }
 
-  private read(documents: readonly Document[]): (Question & { controls?: Control[] }) {
-    const root = this.root(documents);
+  private read(documents: readonly Document[], target?: Element): (Question & { controls?: Control[] }) {
+    const roots = this.roots(documents);
+    return this.readRoot(target ? roots.find((root) => root === target) : this.root(roots));
+  }
+
+  private readRoot(root?: Element): (Question & { controls?: Control[] }) {
     if (!root) return { reason: '请在章节练习中点击要查询的题目。' };
     const typeInput = root.querySelector<HTMLInputElement>('input[id^="answertype" i], input[name^="answertype" i]');
     const stemNode = root.querySelector(selectors.stem) ?? root.querySelector(selectors.stemContainer);
@@ -170,13 +177,25 @@ export class Questions {
       stem, options, selected }, controls };
   }
 
-  snapshot(documents: readonly Document[]): Question {
-    const result = this.read(documents);
+  snapshot(documents: readonly Document[], target?: Element): Question {
+    const result = this.read(documents, target);
     return 'snapshot' in result ? { snapshot: result.snapshot } : { reason: result.reason };
   }
 
-  fill(documents: () => readonly Document[], original: QuestionSnapshot, ids: string[]): FillResult {
-    const initial = this.read(documents());
+  batch(documents: readonly Document[]): { targets: QuestionTarget[]; skipped: number } {
+    const targets: QuestionTarget[] = [];
+    let skipped = 0;
+    for (const root of this.roots(documents)) {
+      const result = this.readRoot(root);
+      if ('snapshot' in result && !result.snapshot.requiresScreenshot && !result.snapshot.selected.length
+        && result.controls?.every((control) => !control.disabled)) targets.push({ root, snapshot: result.snapshot });
+      else skipped++;
+    }
+    return { targets, skipped };
+  }
+
+  fill(documents: () => readonly Document[], original: QuestionSnapshot, ids: string[], target?: Element): FillResult {
+    const initial = this.read(documents(), target);
     if (!('snapshot' in initial) || !initial.controls || !sameQuestion(original, initial.snapshot)
       || !sameSelection(original.selected, initial.snapshot.selected)) {
       return { message: '题目、选项或当前选择已变化，请重新查询。' };
@@ -193,7 +212,7 @@ export class Questions {
     }
     let expected = [...original.selected];
     for (const { control, id, checked } of changes) {
-      const live = this.read(documents());
+      const live = this.read(documents(), target);
       if (!('snapshot' in live) || !sameQuestion(original, live.snapshot) || !sameSelection(expected, live.snapshot.selected)
         || live.controls?.some((item, index) => item.disabled || item.element !== controls[index]?.element)) break;
       control.element.click();
@@ -201,7 +220,7 @@ export class Questions {
         ? checked ? [...expected, id] : expected.filter((existing) => existing !== id)
         : [id];
     }
-    const current = this.read(documents());
+    const current = this.read(documents(), target);
     const same = 'snapshot' in current && sameQuestion(original, current.snapshot);
     const selected = same ? current.snapshot.selected : undefined;
     return selected && sameSelection(selected, ids)

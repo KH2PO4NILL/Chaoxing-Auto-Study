@@ -38,18 +38,31 @@ export function readCatalog(document: Document) {
     || heading?.getAttribute('data-chapter-id') || sectionId(heading) || heading?.id || urlParam(url, 'parentchapterid'));
   const identity = courseId && chapterId && currentId && active.length < 2
     ? { courseId, chapterId, sectionId: currentId } : undefined;
-  const marker = current?.querySelector(selectors.progress);
-  const progress = current?.dataset.progress || marker?.getAttribute('data-progress')
-    || (marker?.matches('.icon_Completed, .icon_yiwanc') ? '已完成' : marker ? '有待完成任务' : '未知');
+  const markers = Array.from(current?.querySelectorAll(selectors.progress) ?? []).filter(visible);
+  // 学习通的课程目录用隐藏输入框的 value 维护剩余任务数。
+  const counters = Array.from(current?.querySelectorAll('.jobUnfinishCount') ?? [])
+    .filter((counter) => counter.tagName === 'INPUT' || visible(counter))
+    .map((counter) => counter.tagName === 'INPUT' ? (counter as HTMLInputElement).value.trim() : textOf(counter));
+  const declaredProgress = current?.dataset.progress?.trim() || '';
+  const states = [declaredProgress, ...markers.flatMap((marker) =>
+    ['data-progress', 'aria-label', 'title'].map((attribute) => marker.getAttribute(attribute)?.trim() ?? ''))];
+  const pending = states.some((state) => /^(?:未完成|部分完成|有待完成任务|incomplete|pending)$/i.test(state))
+    || counters.some((count) => !/^0+$/.test(count));
+  const completed = !pending && (counters.length > 0
+    || states.some((state) => /^(?:已完成|全部完成|任务点已完成|complete|completed)$/i.test(state))
+    || markers.some((marker) => marker.matches('.icon_Completed, .icon_yiwanc')));
+  const progress = completed ? '已完成' : pending ? '有待完成任务'
+    : declaredProgress || markers.find((marker) => marker.hasAttribute('data-progress'))?.getAttribute('data-progress')
+    || (markers.length ? '有待完成任务' : '未知');
   return {
-    identity, courseId, currentId, chapterId, rows, index, current, group, heading, progress,
+    identity, courseId, currentId, chapterId, rows, index, current, group, heading, progress, completed,
     courseName: shell?.dataset.courseName || textOf(document.querySelector(selectors.courseName)) || '当前课程',
     chapterName: label(group?.querySelector('[data-chapter-title]') ?? heading) || shell?.dataset.chapterName || '章节未识别',
     sectionName: label(current) || shell?.dataset.sectionName || '小节未识别',
   };
 }
 
-export function nextSection(document: Document, identity: SectionIdentity): NextSection {
+export function nextSection(document: Document, identity: SectionIdentity, requireVideo: boolean): NextSection {
   const catalog = readCatalog(document);
   const { current, index, rows, group, heading } = catalog;
   if (!current || !catalog.identity || catalog.identity.courseId !== identity.courseId
@@ -66,9 +79,11 @@ export function nextSection(document: Document, identity: SectionIdentity): Next
   const badge = next.querySelector('[data-task-type], .task-type, .catalog_type, [title="视频"], [aria-label="视频"], [title="章节测验"], [aria-label="章节测验"], [title="PDF" i], [title="文档"]');
   const type = (next.dataset.sectionType || next.dataset.type || badge?.getAttribute('data-task-type')
     || badge?.getAttribute('aria-label') || badge?.getAttribute('title') || textOf(badge)).trim();
-  if (/^(?:practice|quiz|work|章节测验|章节练习|练习|测验)$/i.test(type)) return { reason: '下一项是练习，请手动处理。' };
-  if (/^(?:pdf|文档|阅读)$/i.test(type)) return { reason: '下一项是 PDF 阅读，请从课程目录打开。' };
-  if (!/^(?:video|视频|视频课)$/i.test(type)) return { reason: '下一项未明确标记为视频，请从课程目录选择。' };
+  if (requireVideo) {
+    if (/^(?:practice|quiz|work|章节测验|章节练习|练习|测验)$/i.test(type)) return { reason: '下一项是练习，请手动处理。' };
+    if (/^(?:pdf|文档|阅读)$/i.test(type)) return { reason: '下一项是 PDF 阅读，请从课程目录打开。' };
+    if (!/^(?:video|视频|视频课)$/i.test(type)) return { reason: '下一项未明确标记为视频，请从课程目录选择。' };
+  }
   const action = next.matches('a, button') ? next : next.querySelector<HTMLElement>(selectors.action);
   if (!action || !visible(action) || action.matches(':disabled') || action.hasAttribute('download')
     || (action.getAttribute('target') && action.getAttribute('target') !== '_self')) return { reason: '下一节没有可用的课程入口。' };

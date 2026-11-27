@@ -15,7 +15,7 @@
   const section = params.get('chapterId') || '11';
   const variant = params.get('fixture') || '';
   const section12 = document.getElementById('cur12');
-  if (variant === 'practice-next' || section === '21') section12.dataset.sectionType = 'practice';
+  if (variant === 'practice-next' || variant === 'spa-practice-next' || section === '21') section12.dataset.sectionType = 'practice';
   if (variant === 'unknown-next') delete section12.dataset.sectionType;
   if (variant === 'locked-next') section12.setAttribute('aria-disabled', 'true');
   if (variant === 'pdf-next' || (section === '12' && variant.startsWith('pdf-'))) section12.dataset.sectionType = 'pdf';
@@ -40,7 +40,7 @@
       document.body.append(field);
     }
   }
-  if (variant === 'spa') section12.querySelector('a').addEventListener('click', (event) => {
+  if (variant === 'spa' || variant === 'spa-practice-next') section12.querySelector('a').addEventListener('click', (event) => {
     event.preventDefault();
     document.querySelector('.posCatalog_active').classList.remove('posCatalog_active');
     section12.classList.add('posCatalog_active');

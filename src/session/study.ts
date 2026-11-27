@@ -1,18 +1,22 @@
 import { aiMessage, type AiClient } from '../ai/client';
 import { Chat, type ChatView } from '../chat/task';
+import { Advance } from '../playback/advance';
 import { Continuation } from '../playback/continuation';
 import { Reading } from '../playback/reading';
 import { Playback, type PlaybackView } from '../playback/task';
 import type { Chaoxing } from '../platform/chaoxing/adapter';
 import { sameSection, type CourseContext, type Question } from '../platform/chaoxing/types';
+import { AutomaticPractice } from '../practice/automatic';
 import { Practice, type PracticeView } from '../practice/task';
 import type { PlaybackMode, ServiceInput, Settings, SettingsView } from '../settings/store';
 
 export interface StudyView {
   context: CourseContext;
   playback: PlaybackView;
+  advance: ReturnType<Advance['view']>;
   reading: ReturnType<Reading['view']>;
   practice: PracticeView;
+  autoPractice: ReturnType<AutomaticPractice['view']> & { available: boolean };
   chat: ChatView;
   settings: SettingsView;
   checking: boolean;
@@ -25,13 +29,19 @@ interface Scope {
   kind: CourseContext['kind'];
   question: Question;
   playback: Playback;
+  advance: Advance;
   reading: Reading;
   practice: Practice;
+  autoPractice: AutomaticPractice;
   chat: Chat;
   previousMedia?: { element: HTMLVideoElement; source: string };
 }
 
 const unavailable: Question = { reason: '当前章节尚未识别，请使用学习通页面。' };
+
+function canAutoPractice(context?: CourseContext): boolean {
+  return Boolean(context?.questionAvailable && (context.hasPractice || context.kind === 'practice') && !context.interaction);
+}
 
 function mediaSource(video: HTMLVideoElement): string {
   return video.getAttribute('src') || video.querySelector('source')?.getAttribute('src') || video.currentSrc;
@@ -63,8 +73,10 @@ export class StudySession {
   private manualNavigation(): void {
     this.continuation.clear();
     this.scope?.practice.invalidate('');
+    this.scope?.autoPractice.stop('已停止自动答题。', false);
     this.scope?.chat.clear(false);
     this.scope?.reading.stop('已停止 PDF 阅读。');
+    this.scope?.advance.stop();
     const playback = this.scope?.playback;
     if (playback && playback.view(this.scope?.context).state !== 'idle') playback.stop();
   }
@@ -112,15 +124,21 @@ export class StudySession {
       this.page.resetQuestion();
       const version = ++this.version;
       const update = () => { if (this.scope?.version === version) this.render(); };
-      const playback = new Playback({ live: () => this.live(version), next: (identity) => this.page.next(identity),
-        enter: (action) => this.page.enter(action) }, this.continuation, update);
+      const advance: Advance = new Advance(() => this.live(version), (identity, requireVideo) => this.page.next(identity, requireVideo),
+        (identity, entry, autoplay) => playback.enterNext(identity, entry, autoplay), update);
+      const playback = new Playback({ live: () => this.live(version), enter: (action) => this.page.enter(action) },
+        this.continuation, () => advance.arm('video'), update);
       const practice = new Practice(() => this.question(version), (snapshot, ids) => this.page.fill(snapshot, ids),
         () => Boolean(this.live(version)?.screenshotAvailable), this.settings, this.client, update);
+      const autoPractice = new AutomaticPractice(() => canAutoPractice(this.live(version)), () => this.page.questionBatch(),
+        (root) => this.page.question(root), ({ root, snapshot }, ids) => this.page.fill(snapshot, ids, root),
+        this.settings, this.client, update);
       const chat = new Chat(this.settings, this.client, () => Boolean(this.live(version)?.screenshotAvailable), update);
       const reading = new Reading(() => this.live(version), update);
-      this.scope = { version, context, kind: context.kind, question: unavailable, playback, reading, practice, chat, previousMedia };
+      this.scope = { version, context, kind: context.kind, question: unavailable, playback, advance, reading, practice, autoPractice, chat, previousMedia };
       if (old) this.watch();
-      if (resume) playback.resumeHandoff();
+      if (resume === 'chapter') playback.resumeHandoff();
+      else if (resume === 'advance') advance.arm('section');
     }
     const scope = this.scope;
     if (!scope) return;
@@ -130,16 +148,19 @@ export class StudySession {
     if (scope.context.media) scope.previousMedia = undefined;
     scope.question = scope.context.identity || scope.context.questionAvailable ? this.page.question() : unavailable;
     scope.playback.sync(scope.context);
+    scope.advance.sync(scope.context);
     scope.reading.sync(scope.context);
     scope.practice.sync(scope.question, scope.context.screenshotAvailable);
+    if (!canAutoPractice(scope.context)) scope.autoPractice.stop('当前页面不可自动答题。', false);
     this.render();
   }
 
   private render(): void {
     const scope = this.scope;
     if (!scope) { this.publish(); return; }
-    const { playback, reading, practice, chat, context, question } = scope;
-    this.publish({ context, playback: playback.view(context), reading: reading.view(context), practice: practice.view(question), chat: chat.view(),
+    const { playback, advance, reading, practice, autoPractice, chat, context, question } = scope;
+    this.publish({ context, playback: playback.view(context), advance: advance.view(), reading: reading.view(context), practice: practice.view(question), chat: chat.view(),
+      autoPractice: { ...autoPractice.view(), available: canAutoPractice(context) },
       settings: this.settings.view(), checking: Boolean(this.check), settingsMessage: this.settingsMessage });
   }
 
@@ -147,8 +168,10 @@ export class StudySession {
     const scope = this.scope;
     this.scope = undefined;
     scope?.playback.dispose();
+    scope?.advance.dispose();
     scope?.reading.dispose();
     scope?.practice.invalidate('', false);
+    scope?.autoPractice.stop('', false);
     scope?.chat.clear(false);
     this.check?.abort();
     this.check = undefined;
@@ -162,18 +185,43 @@ export class StudySession {
     this.unwatch = undefined;
   }
 
-  setMode(mode: PlaybackMode): void { this.settings.setPlaybackMode(mode); this.render(); }
+  setMode(mode: PlaybackMode): void {
+    this.settings.setPlaybackMode(mode);
+    if (mode === 'section') this.scope?.advance.stop('已取消连续播放接续。', true);
+    this.render();
+  }
   setCollapsed(value: boolean): void { this.settings.setCollapsed(value); this.render(); }
-  start(): void { this.scope?.playback.start(this.settings.view().mode); }
+  start(): void {
+    this.scope?.advance.stop('已取消之前的连续播放接续。', true);
+    this.scope?.playback.start(this.settings.view().mode);
+  }
   pause(): void { this.scope?.playback.pause(); }
-  stop(): void { this.scope?.playback.stop(); }
+  stop(): void { this.scope?.playback.stop(); this.scope?.advance.stop('已取消连续播放接续。', true); }
+  toggleAdvance(): void {
+    const advance = this.scope?.advance;
+    if (advance?.view().armed) advance.stop();
+    else advance?.arm('section');
+  }
   readPdf(): void { this.scope?.reading.start(); }
   pausePdf(): void { this.scope?.reading.stop(); }
-  prepare(screenshot = false): void { this.scope?.practice.prepare(screenshot); }
-  attachScreenshot(file: File): void { void this.scope?.practice.attachScreenshot(file); }
-  send(): void { void this.scope?.practice.send(); }
+  prepare(screenshot = false): void { if (!this.scope?.autoPractice.view().running) this.scope?.practice.prepare(screenshot); }
+  attachScreenshot(file: File): void { if (!this.scope?.autoPractice.view().running) void this.scope?.practice.attachScreenshot(file); }
+  send(): void { if (!this.scope?.autoPractice.view().running) void this.scope?.practice.send(); }
   cancel(): void { this.scope?.practice.invalidate('已取消查询。'); }
-  fill(): void { this.scope?.practice.fill(); this.refresh(); }
+  fill(): void {
+    if (this.scope?.autoPractice.view().running) return;
+    this.scope?.practice.fill();
+    this.refresh();
+  }
+  toggleAutoPractice(): void {
+    const scope = this.scope;
+    if (!scope) return;
+    if (scope.autoPractice.view().running) { scope.autoPractice.stop(); return; }
+    const manual = scope.practice.view(scope.question);
+    if (manual.busy || manual.review) return;
+    scope.practice.invalidate('', false);
+    void scope.autoPractice.start();
+  }
   writeChat(text: string): void { this.scope?.chat.write(text); }
   includeChatQuestion(): void { if (this.scope) this.scope.chat.includeQuestion(this.question(this.scope.version)); }
   attachChatFile(file: File): void { this.scope?.chat.attachFile(file); }
@@ -187,6 +235,7 @@ export class StudySession {
     this.check?.abort();
     this.check = undefined;
     this.scope?.practice.invalidate(message, false);
+    this.scope?.autoPractice.stop(message, false);
     this.scope?.chat.clear(false);
   }
 

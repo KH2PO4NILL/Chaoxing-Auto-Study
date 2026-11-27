@@ -1,10 +1,10 @@
-# 超级超星 0.1.5 验证记录
+# 超级超星 0.1.6 验证记录
 
-验证日期为 2026 年 11 月 27 日。构建产物为 [dist/chaoxing-auto-study.user.js](dist/chaoxing-auto-study.user.js)，元数据版本为 `0.1.5`。
+验证日期为 2026 年 11 月 27 日。构建产物为 [dist/chaoxing-auto-study.user.js](dist/chaoxing-auto-study.user.js)，元数据版本为 `0.1.6`。
 
 ## 本地模拟
 
-Windows 上的 `npm ci`、`npm run typecheck`、`npm test` 和 `npm run build` 均通过。Playwright 1.65.1 在 Chrome for Testing 159.0.8154.6 和 Microsoft Edge 158.0.4370.33 下各通过 32 项用例。用例以打包产物挂载到虚构课程，模拟 Tampermonkey 存储接口、播放器事件及模型响应，并使用可解码的测试视频和跨域内嵌阅读器。
+Windows 上的 `npm ci`、`npm run typecheck`、`npm test` 和 `npm run build` 均通过。Playwright 1.65.1 在 Chrome for Testing 159.0.8154.6 和 Microsoft Edge 158.0.4370.33 下各通过 35 项用例。用例以打包产物挂载到虚构课程，模拟 Tampermonkey 存储接口、播放器事件及模型响应，并使用可解码的测试视频和跨域内嵌阅读器。
 
 | 编号 | 验证场景 | 结果 |
 | --- | --- | --- |
@@ -17,10 +17,13 @@ Windows 上的 `npm ci`、`npm run typecheck`、`npm test` 和 `npm run build` �
 | A7 | 旧配置与未来版本、可保留偏好、记住和清除密钥、临时内容在刷新后清理 | 通过 |
 | A8 | 跨域阅读器滚动、暂停、继续、到达末尾、阅读器替换、不可访问的文档和混合视频小节 | 通过 |
 | A9 | 聊天默认打开、无章标识时读取内嵌文字题、追问上下文、当前标签页裁切和停止共享、错选标签页 | 通过 |
+| A10 | 任务计数从 1 变成 0 后倒计时、计时满 10 秒才导航、取消和同章接续 | 通过 |
+| A11 | 批量作答、保留已有和等待回复时修改的答案、多选回填、取消和手动提交 | 通过 |
+| A12 | 聊天及题目解析中的行内公式、独立公式和普通文本 | 通过 |
 
 ## Tampermonkey 安装
 
-在 Chrome for Testing 159.0.8154.6 和 Microsoft Edge 158.0.4370.33 的临时浏览器配置中，使用 Tampermonkey 5.5.1 导入 `0.1.5`。测试浏览器按标题选定虚构学习通标签页，两种浏览器均验证了浏览器原生捕获、网页内框选、聊天草稿预览和确认后向模拟模型发送。此前的 `0.1.4` 安装实测覆盖侧栏和截图文件入口，`0.1.2` 覆盖特殊字体题回填，`0.1.1` 覆盖模拟 PDF 阅读器滚动。 [浏览器共享选项说明](https://developer.chrome.com/docs/web-platform/screen-sharing-controls)
+在 Chrome for Testing 159.0.8154.6 和 Microsoft Edge 158.0.4370.33 的临时浏览器配置中，使用 Tampermonkey 5.5.1 导入 `0.1.6`。两种浏览器均在虚构学习通课程中验证了自动填写题目、聊天公式显示，以及任务计数清零后等待 10 秒跳转。此前的 `0.1.5` 安装实测覆盖标签页捕获、网页框选和聊天附件发送，`0.1.4` 覆盖侧栏和截图文件入口，`0.1.2` 覆盖特殊字体题回填，`0.1.1` 覆盖模拟 PDF 阅读器滚动。
 
 脚本声明 `@sandbox DOM`。实际注入环境由 Tampermonkey 配置决定。此前的 `0.1.0` 安装实测还覆盖本地视频播放、无 AI 配置启动、刷新保留面板折叠偏好、刷新回到待命和普通站点无入口。 [Tampermonkey 沙箱说明](https://www.tampermonkey.net/documentation.php?q=sandbox)
 

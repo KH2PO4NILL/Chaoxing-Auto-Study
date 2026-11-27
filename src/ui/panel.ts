@@ -3,6 +3,7 @@ import type { QuestionMedia, QuestionSnapshot } from '../platform/chaoxing/types
 import type { ChatMessage } from '../ai/client';
 import { chatTextLimit } from '../chat/task';
 import { PageCapture } from './page-capture';
+import { renderModelText } from './math';
 
 const template = `
 <style>
@@ -144,6 +145,7 @@ const template = `
   }
   #chat-messages li[data-role=user] { margin-left: auto; background: var(--accent-soft); border-color: transparent; }
   #chat-messages p { margin: 0; white-space: pre-wrap; }
+  .katex:has(math[display=block]) { display: block; overflow-x: auto; margin-block: 8px; }
   #chat-messages .message-label { margin-bottom: 4px; color: var(--secondary); font-size: 12px; font-weight: 600; }
   #chat-messages img, #chat-attachment img {
     display: block;
@@ -198,13 +200,15 @@ const template = `
     background: #fff;
     box-shadow: 0 3px 16px #18162e5e;
   }
-  #video-controls, #pdf, #practice, #service {
+  #video-controls, #pdf, #advance, #practice, #service {
     border: 1px solid var(--line);
     border-radius: 12px;
     padding: 14px;
     background: #fff;
   }
   #video-controls + #pdf, #progress, #practice > .actions + p, #service + p { margin-top: 10px; }
+  #auto-practice-controls { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+  #auto-practice-hint { margin: 7px 0 0; }
   .status, #preview, #suggestion { background: #f1f0fa; padding: 10px; border-radius: 8px; overflow-wrap: anywhere; }
   .status { margin: 10px 0 0; }
   .status:empty { display: none; }
@@ -290,12 +294,21 @@ const template = `
       <p id="pdf-status" class="status" role="status"></p>
     </section>
     <p id="progress" class="secondary"></p>
+    <section id="advance" aria-label="自动跳转">
+      <button id="advance-toggle" type="button">本节完成后跳转</button>
+      <p id="advance-status" class="status" role="status"></p>
+    </section>
   </div>
   <div id="practice" role="tabpanel" aria-labelledby="tab-practice" hidden>
     <h3 id="question-type"></h3><p id="stem"></p>
     <div class="actions"><button id="query" class="primary">查询答案</button><button id="query-screenshot">截图查询</button><button id="cancel" hidden>取消查询</button><button id="fill" hidden>填入本题</button></div>
     <p id="screenshot-hint" class="secondary" hidden>框选并复制后，点「截图查询」并按 Ctrl+V，或选择截图文件。</p>
     <p id="practice-status" class="status" role="status"></p>
+    <section id="auto-practice-controls" aria-label="自动答题" hidden>
+      <button id="auto-practice" type="button">开始自动答题</button>
+      <p id="auto-practice-hint" class="secondary"></p>
+      <p id="auto-practice-status" class="status" role="status"></p>
+    </section>
     <section id="preview" aria-labelledby="preview-heading" hidden>
       <h3 id="preview-heading">确认发送给模型</h3>
       <p id="destination"></p><p id="send-stem"></p><ol id="send-options"></ol><p id="send-media" class="secondary" hidden></p>
@@ -392,13 +405,14 @@ export class Panel {
     if (node.textContent !== value) node.textContent = value;
   }
 
-  private list(id: string, values: string[]): void {
-    const serialized = JSON.stringify(values);
+  private list(id: string, values: string[], math = false): void {
+    const serialized = JSON.stringify([values, math]);
     if (serialized === this.listValues.get(id)) return;
     this.listValues.set(id, serialized);
     const items = values.map((value) => {
       const element = this.host.ownerDocument.createElement('li');
-      element.textContent = value;
+      if (math) renderModelText(element, value);
+      else element.textContent = value;
       return element;
     });
     this.el(id).replaceChildren(...items);
@@ -475,6 +489,8 @@ export class Panel {
     this.button('stop', () => this.session().stop());
     this.button('pdf-start', () => this.session().readPdf());
     this.button('pdf-pause', () => this.session().pausePdf());
+    this.button('advance-toggle', () => this.session().toggleAdvance());
+    this.button('auto-practice', () => this.session().toggleAutoPractice());
     this.button('query', () => {
       this.session().prepare();
       if (!this.el('preview').hidden) this.el(this.el('screenshot-input').hidden ? 'send' : 'screenshot-input').focus();
@@ -497,7 +513,7 @@ export class Panel {
       if (!this.el('chat').hidden && !this.view.chat.busy && !this.view.chat.attaching) {
         event.preventDefault();
         this.session().attachChatFile(file);
-      } else if (!this.el('practice').hidden && !this.view.practice.busy) {
+      } else if (!this.el('practice').hidden && !this.view.practice.busy && !this.view.autoPractice.running) {
         event.preventDefault();
         this.session().attachScreenshot(file);
       }
@@ -540,13 +556,14 @@ export class Panel {
     this.host.toggleAttribute('data-capturing', Boolean(view?.chat.capturing));
     if (!view) return;
     if (!this.host.isConnected) this.host.ownerDocument.body?.append(this.host);
-    const { context, playback, reading, practice, chat, settings } = view;
+    const { context, playback, advance, reading, practice, autoPractice, chat, settings } = view;
     const collapsed = settings.readOnly ? this.localCollapsed ?? settings.collapsed : settings.collapsed;
     const toggle = this.el('toggle');
     this.el('panel').hidden = collapsed;
     toggle.hidden = !collapsed;
     toggle.setAttribute('aria-expanded', String(!collapsed));
-    const status = reading.running ? '阅读中' : practice.busy || chat.busy ? '查询中' : playbackStates[playback.state];
+    const status = advance.seconds ? `${advance.seconds} 秒后跳转` : reading.running ? '阅读中'
+      : autoPractice.running ? '答题中' : practice.busy || chat.busy ? '查询中' : playbackStates[playback.state];
     this.text('toggle-status', status);
     this.text('sidebar-status', status);
     const location = [context.courseName, context.chapterName, context.sectionName].join(' / ');
@@ -554,6 +571,10 @@ export class Panel {
     this.text('location', location);
     this.text('position', context.media ? `视频位置 ${clock(playback.time)} / ${clock(playback.duration)}` : '视频位置 —');
     this.text('progress', `学习通完成标记 ${context.progress}`);
+    this.text('advance-toggle', advance.armed ? '取消自动跳转' : '本节完成后跳转');
+    this.disable('advance-toggle', !context.identity || !context.screenshotAvailable || playback.state === 'navigating');
+    this.text('advance-status', advance.seconds ? `本节任务已完成，${advance.seconds} 秒后进入下一节。`
+      : advance.message || (!context.identity ? '当前课程目录无法确认。' : ''));
     const mode = this.el<HTMLSelectElement>('mode');
     mode.value = settings.mode;
     mode.disabled = settings.readOnly || ['playing', 'starting', 'paused', 'waiting', 'navigating'].includes(playback.state);
@@ -570,7 +591,7 @@ export class Panel {
     this.disable('pdf-pause', !reading.running);
     this.text('pdf-status', reading.message);
     this.renderChat(chat, context.screenshotAvailable);
-    this.renderPractice(practice, context.screenshotAvailable);
+    this.renderPractice(practice, autoPractice, context.screenshotAvailable, settings.origin);
     this.renderSettings(view);
     if (wasCapturing && !chat.capturing && !collapsed && !this.el('chat').hidden) this.el('chat-input').focus();
   }
@@ -612,7 +633,8 @@ export class Panel {
       item.dataset.role = message.role;
       label.className = 'message-label';
       label.textContent = message.role === 'user' ? '你' : 'AI';
-      body.textContent = message.text;
+      if (message.role === 'assistant') renderModelText(body, message.text);
+      else body.textContent = message.text;
       item.append(label, body);
       if (message.image) {
         const img = document.createElement('img');
@@ -627,20 +649,25 @@ export class Panel {
     thread.scrollTop = thread.scrollHeight;
   }
 
-  private renderPractice(practice: StudyView['practice'], screenshotAvailable: boolean): void {
+  private renderPractice(practice: StudyView['practice'], automatic: StudyView['autoPractice'], screenshotAvailable: boolean, origin: string): void {
     const current = 'snapshot' in practice.question ? practice.question.snapshot : undefined;
     this.text('question-type', current ? questionTypes[current.type] : '当前题目');
     this.text('stem', current?.requiresScreenshot ? '页面文字使用特殊字体。可截图查询这道题。'
       : current ? contentLabel(current.stem) : ('reason' in practice.question ? practice.question.reason : ''));
     this.text('query', current && (practice.suggestion || practice.message) ? '重新查询' : '查询答案');
     this.el('query').hidden = Boolean(current?.requiresScreenshot);
-    this.disable('query', !current || practice.busy || Boolean(practice.review));
+    this.disable('query', !current || practice.busy || automatic.running || Boolean(practice.review));
     this.el('query-screenshot').hidden = !screenshotAvailable;
-    this.disable('query-screenshot', practice.busy || Boolean(practice.review?.screenshotMode));
+    this.disable('query-screenshot', practice.busy || automatic.running || Boolean(practice.review?.screenshotMode));
     this.el('screenshot-hint').hidden = !screenshotAvailable || Boolean(practice.review?.screenshotMode) || practice.busy;
     this.el('cancel').hidden = !practice.busy;
     this.el('fill').hidden = !practice.canFill;
     this.text('practice-status', practice.message);
+    this.el('auto-practice-controls').hidden = !automatic.available && !automatic.running && !automatic.message;
+    this.text('auto-practice', automatic.running ? '停止自动答题' : '开始自动答题');
+    this.disable('auto-practice', !automatic.running && (!automatic.available || practice.busy || Boolean(practice.review)));
+    this.text('auto-practice-hint', origin ? `将可读取的未答题发送至 ${origin} 并填入，提交前请核对。` : '自动答题需要配置 AI 服务。');
+    this.text('auto-practice-status', automatic.message);
     const review = practice.review;
     this.el('preview').hidden = !review;
     this.text('destination', review?.config.origin ?? '');
@@ -664,8 +691,9 @@ export class Panel {
     const suggestion = practice.suggestion;
     this.el('suggestion').hidden = !suggestion;
     this.list('suggested-options', suggestion && 'answer' in suggestion ? [suggestion.answer]
-      : current?.options.flatMap(({ id }, index) => suggestion?.optionIds.includes(id) ? [visibleOption(current, index)] : []) ?? []);
-    this.text('explanation', suggestion?.explanation ?? '');
+      : current?.options.flatMap(({ id }, index) => suggestion?.optionIds.includes(id) ? [visibleOption(current, index)] : []) ?? [],
+    Boolean(suggestion && 'answer' in suggestion));
+    renderModelText(this.el('explanation'), suggestion?.explanation ?? '');
     const selected = current?.options.flatMap(({ id }, index) =>
       practice.filled?.includes(id) ? [visibleOption(current, index)] : []) ?? [];
     this.text('filled', practice.filled ? `读回的选择 ${selected.join('、') || '无'}` : '');

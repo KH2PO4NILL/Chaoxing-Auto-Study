@@ -1,10 +1,11 @@
 import { AiError, aiMessage } from '../ai/client';
 import type { AiClient, Suggestion, VisualInput } from '../ai/client';
-import { captureQuestionMedia, QuestionMediaError } from '../platform/chaoxing/question-media';
+import { QuestionMediaError } from '../platform/chaoxing/question-media';
 import { sameQuestion, sameSelection } from '../platform/chaoxing/types';
 import type { FillResult, Question, QuestionSnapshot } from '../platform/chaoxing/types';
 import type { ServiceConfig, Settings } from '../settings/store';
 import { readScreenshot } from './screenshot';
+import { captureVisuals, questionAttachments } from './visuals';
 
 interface Query {
   question?: QuestionSnapshot;
@@ -112,10 +113,7 @@ export class Practice {
     }
     const active = { query, controller: new AbortController() };
     this.request = active;
-    const groups = question && !query.screenshotMode ? [{ ...question.stem, id: '题干' }, ...question.options] : [];
-    const attachments = groups.flatMap(({ id, media }) => media.map((item, index) => ({
-      item, location: `${id} · 附件 ${index + 1}`,
-    })));
+    const attachments = question && !query.screenshotMode ? questionAttachments(question) : [];
     this.message = attachments.length ? '正在读取题目图片和视频画面。' : '正在查询模型。';
     this.changed();
     try {
@@ -126,14 +124,13 @@ export class Practice {
         query.screenshot = undefined;
       }
       if (attachments.length) {
-        const frames = await Promise.all(attachments.map(async ({ item, location }) =>
-          (await captureQuestionMedia(item, signal)).map((frame) => ({ ...frame, location }))));
+        const frames = await captureVisuals(attachments, signal);
         if (this.request !== active) return;
         if (!this.isCurrent(query, this.read(), this.screenshotAvailable())) {
           this.invalidate('题目、选项或当前选择已变化，请重新查询。');
           return;
         }
-        visuals.push(...frames.flat());
+        visuals.push(...frames);
         this.message = '正在查询模型。';
         this.changed();
       }
