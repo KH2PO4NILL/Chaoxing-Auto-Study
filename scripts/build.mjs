@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 
 const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const license = (await readFile(new URL('../LICENSE', import.meta.url), 'utf8')).trim();
+const katexLicense = (await readFile(new URL('../node_modules/katex/LICENSE', import.meta.url), 'utf8')).trim();
 const matches = ['', '/mooc-ans', '/mooc2-ans'].map(
   (prefix) => `// @match        https://*.chaoxing.com${prefix}/mycourse/studentstudy*`,
 );
@@ -12,7 +13,7 @@ const metadata = [
   '// @namespace    https://github.com/KH2PO4NILL/Chaoxing-Auto-Study',
   `// @version      ${version}`,
   '// @license      MIT',
-  '// @description  在学习通课程页播放视频、阅读 PDF 和查询章节练习建议',
+  '// @description  在学习通课程页使用 AI 聊天、截图查题、播放视频和阅读 PDF',
   ...matches,
   '// @match        https://pan-yz.chaoxing.com/screen/v2/file_*',
   '// @grant        GM_getValue',
@@ -32,5 +33,5 @@ await build({
   format: 'iife',
   target: 'es2022',
   outfile: 'dist/chaoxing-auto-study.user.js',
-  banner: { js: `${metadata}\n/*\n${license}\n*/` },
+  banner: { js: `${metadata}\n/*\n${license}\n\nKaTeX\n${katexLicense}\n*/` },
 });

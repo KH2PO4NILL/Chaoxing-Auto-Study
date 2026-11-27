@@ -20,6 +20,11 @@ export interface QuestionSnapshot {
 
 export type Question = { snapshot: QuestionSnapshot } | { reason: string };
 
+export interface QuestionTarget {
+  root: Element;
+  snapshot: QuestionSnapshot;
+}
+
 export interface SectionIdentity {
   courseId: string;
   chapterId: string;
@@ -33,10 +38,13 @@ export interface CourseContext {
   chapterName: string;
   sectionName: string;
   progress: string;
+  completed: boolean;
   kind: 'video' | 'practice' | 'pdf' | 'other' | 'unknown';
   media?: HTMLVideoElement;
   pdf?: PdfReader;
   hasPractice: boolean;
+  questionAvailable: boolean;
+  screenshotAvailable: boolean;
   blockedMedia: boolean;
   interaction: boolean;
 }
@@ -47,6 +55,7 @@ export type PdfReader =
   | { reason: string };
 
 export type NextSection = { target: SectionIdentity; action: HTMLElement } | { reason: string };
+export type SectionEntry = Extract<NextSection, { target: SectionIdentity }>;
 
 export interface FillResult {
   message: string;

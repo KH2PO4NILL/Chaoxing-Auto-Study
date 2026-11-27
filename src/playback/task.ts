@@ -1,5 +1,4 @@
-import { sameSection } from '../platform/chaoxing/types';
-import type { CourseContext, NextSection, SectionIdentity } from '../platform/chaoxing/types';
+import type { CourseContext, SectionEntry, SectionIdentity } from '../platform/chaoxing/types';
 import type { PlaybackMode } from '../settings/store';
 import { continuationMs, type Continuation } from './continuation';
 
@@ -13,7 +12,6 @@ export interface PlaybackView {
 
 interface PageAccess {
   live(): CourseContext | undefined;
-  next(identity: SectionIdentity): NextSection;
   enter(action: HTMLElement): void;
 }
 
@@ -29,7 +27,7 @@ export class Playback {
   private timer?: ReturnType<typeof setTimeout>;
 
   constructor(private readonly page: PageAccess, private readonly continuation: Continuation,
-    private readonly changed: () => void) {}
+    private readonly afterVideo: () => void, private readonly changed: () => void) {}
 
   get navigating(): boolean { return this.state === 'navigating'; }
 
@@ -167,19 +165,18 @@ export class Playback {
       this.finish('ended', '本节视频已结束。');
       return;
     }
-    if (context.pdf || context.hasPractice) {
-      this.finish('ended', '本节视频已结束。请先处理本节的阅读或练习，再进入下一节。');
-      return;
-    }
-    const next = this.page.next(context.identity);
-    if ('reason' in next) {
-      this.finish('ended', next.reason);
-      return;
-    }
-    if (!this.continuation.write(context.identity, next.target)) {
+    this.finish('ended', context.pdf || context.hasPractice
+      ? '本节视频已结束。请先处理本节的阅读或练习。' : '本节视频已结束。');
+    this.afterVideo();
+  }
+
+  enterNext(identity: SectionIdentity, next: SectionEntry, autoplay: boolean): void {
+    if (this.navigating) return;
+    if (!this.continuation.write(identity, next.target, autoplay ? 'chapter' : 'advance')) {
       this.finish('ended', '浏览器无法保存接续信息，请手动打开下一节。');
       return;
     }
+    this.clearTimer();
     this.active = false;
     this.timer = setTimeout(() => this.finish('stopped', '未能确认到达下一节，请从课程目录打开。'), continuationMs);
     this.set('navigating', '正在进入下一节。');

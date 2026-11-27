@@ -7,7 +7,10 @@ import type { CourseContext, FillResult, NextSection, Question, QuestionSnapshot
 interface PageDocuments {
   documents: Document[];
   blockedMedia: boolean;
+  assessment: boolean;
 }
+
+const examPath = /\/(?:exam|exam-ans)(?:\/|$)/i;
 
 export class Chaoxing {
   private readonly questions = new Questions();
@@ -18,14 +21,17 @@ export class Chaoxing {
   private available(sectionId: string): PageDocuments {
     const documents = [this.window.document];
     let blockedMedia = false;
+    let assessment = false;
     for (const document of documents) {
       for (const frame of document.querySelectorAll<HTMLIFrameElement>('iframe')) {
         if (!visible(frame) || frame.closest(selectors.question)) continue;
         let frameUrl: URL;
         try { frameUrl = new URL(frame.getAttribute('src') || 'about:blank', document.baseURI); } catch { continue; }
+        if (examPath.test(frameUrl.pathname)) { assessment = true; continue; }
         const isTask = !frame.matches(selectors.pdfFrame) && (frame.matches('#iframe, [data-study-frame]')
           || /\/knowledge\/cards|\/ananas\/modules\/video/i.test(frameUrl.pathname));
         const requestedSection = /\/knowledge\/cards/i.test(frameUrl.pathname) ? urlParam(frameUrl, 'knowledgeid', 'chapterid') : '';
+        const requestedCard = /\/knowledge\/cards/i.test(frameUrl.pathname) ? urlParam(frameUrl, 'num') : '';
         if (requestedSection && sectionId && requestedSection !== sectionId) continue;
         let child: Document | null;
         try { child = frame.contentDocument; } catch { child = null; }
@@ -34,14 +40,15 @@ export class Chaoxing {
           continue;
         }
         const url = new URL(child.URL);
-        if (/\/(?:exam|exam-ans)(?:\/|$)/i.test(url.pathname)) continue;
+        if (examPath.test(url.pathname)) { assessment = true; continue; }
         const loadedSection = /\/knowledge\/cards/i.test(url.pathname) ? urlParam(url, 'knowledgeid', 'chapterid') : '';
         if (requestedSection && requestedSection !== loadedSection) continue;
+        if (requestedCard && requestedCard !== urlParam(url, 'num')) continue;
         if (loadedSection && sectionId && loadedSection !== sectionId) continue;
         if (!documents.includes(child)) documents.push(child);
       }
     }
-    return { documents, blockedMedia };
+    return { documents, blockedMedia, assessment: assessment || documents.some((doc) => Boolean(doc.querySelector(selectors.assessment))) };
   }
 
   context(): CourseContext | undefined {
@@ -49,7 +56,7 @@ export class Chaoxing {
     const url = new URL(document.URL);
     if (!studyUrl(url) || url.searchParams.has('examsystem') || document.querySelector(selectors.assessment)) return undefined;
     const catalog = readCatalog(document);
-    const { documents, blockedMedia } = this.available(catalog.currentId);
+    const { documents, blockedMedia, assessment } = this.available(catalog.currentId);
     const videos = documents.flatMap((doc) => Array.from(doc.querySelectorAll<HTMLVideoElement>('video'))
       .filter((video) => visible(video) && !video.closest(selectors.question)));
     const pdf = readPdf(documents);
@@ -68,37 +75,44 @@ export class Chaoxing {
     return {
       identity: catalog.identity,
       scopeKey: JSON.stringify([url.origin, url.pathname, catalog.courseId, catalog.chapterId, catalog.currentId,
-        urlParam(url, 'clazzid', 'classid'), tab?.id || tabLabel]),
+        urlParam(url, 'clazzid', 'classid'), tab?.getAttribute('cardid') || tab?.id || tabLabel]),
       courseName: catalog.courseName,
       chapterName: catalog.chapterName,
       sectionName: catalog.sectionName,
       progress: catalog.progress,
+      completed: catalog.completed,
       kind,
       media,
       pdf,
       hasPractice: practice,
+      questionAvailable: Boolean(catalog.courseId && catalog.currentId && !assessment),
+      screenshotAvailable: !assessment,
       blockedMedia: blockedMedia || videos.length > 1,
       interaction: documents.some((doc) => Array.from(doc.querySelectorAll(selectors.interaction)).some(visible)),
     };
   }
 
-  question(): Question {
-    return this.questions.snapshot(this.questionDocuments());
+  question(target?: Element): Question {
+    return this.questions.snapshot(this.questionDocuments(), target);
   }
+
+  questionBatch(): ReturnType<Questions['batch']> { return this.questions.batch(this.questionDocuments()); }
 
   private questionDocuments(): Document[] {
     const document = this.window.document;
     if (!studyUrl(new URL(document.URL)) || document.querySelector(selectors.assessment)) return [];
     const { documents } = this.available(readCatalog(document).currentId);
     return documents.filter((doc) => doc === document || !/\/(?:mooc2\/work\/dowork|work\/dohomeworknew)(?:\/|$)/i.test(new URL(doc.URL).pathname)
-      || Boolean(doc.querySelector('.TiMu')));
+      || Boolean(doc.querySelector(selectors.question)));
   }
 
-  fill(question: QuestionSnapshot, ids: string[]): FillResult {
-    return this.questions.fill(() => this.questionDocuments(), question, ids);
+  fill(question: QuestionSnapshot, ids: string[], target?: Element): FillResult {
+    return this.questions.fill(() => this.questionDocuments(), question, ids, target);
   }
 
-  next(identity: SectionIdentity): NextSection { return nextSection(this.window.document, identity); }
+  next(identity: SectionIdentity, requireVideo: boolean): NextSection {
+    return nextSection(this.window.document, identity, requireVideo);
+  }
 
   enter(action: HTMLElement): void {
     this.automatedEntry = action;

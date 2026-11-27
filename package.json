@@ -1,6 +1,6 @@
 {
   "name": "chaoxing-auto-study",
-  "version": "0.1.2",
+  "version": "0.1.6",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,5 +12,8 @@
     "@playwright/test": "1.65.1",
     "esbuild": "0.28.2",
     "typescript": "6.0.3"
+  },
+  "dependencies": {
+    "katex": "0.19.1"
   }
 }

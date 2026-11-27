@@ -15,7 +15,7 @@
   const section = params.get('chapterId') || '11';
   const variant = params.get('fixture') || '';
   const section12 = document.getElementById('cur12');
-  if (variant === 'practice-next' || section === '21') section12.dataset.sectionType = 'practice';
+  if (variant === 'practice-next' || variant === 'spa-practice-next' || section === '21') section12.dataset.sectionType = 'practice';
   if (variant === 'unknown-next') delete section12.dataset.sectionType;
   if (variant === 'locked-next') section12.setAttribute('aria-disabled', 'true');
   if (variant === 'pdf-next' || (section === '12' && variant.startsWith('pdf-'))) section12.dataset.sectionType = 'pdf';
@@ -29,8 +29,18 @@
       sessionStorage.setItem('entries', String(Number(sessionStorage.getItem('entries') ?? '0') + 1));
     });
   }
-  document.getElementById('cur' + section).classList.add('posCatalog_active');
-  if (variant === 'spa') section12.querySelector('a').addEventListener('click', (event) => {
+  document.getElementById('cur' + section)?.classList.add('posCatalog_active');
+  if (variant === 'standard-question') {
+    document.getElementById('chapters').remove();
+    for (const [id, value] of [['curCourseId', '42'], ['curChapterId', section]]) {
+      const field = document.createElement('input');
+      field.type = 'hidden';
+      field.id = id;
+      field.value = value;
+      document.body.append(field);
+    }
+  }
+  if (variant === 'spa' || variant === 'spa-practice-next') section12.querySelector('a').addEventListener('click', (event) => {
     event.preventDefault();
     document.querySelector('.posCatalog_active').classList.remove('posCatalog_active');
     section12.classList.add('posCatalog_active');
@@ -71,7 +81,7 @@
     const frame = document.createElement('iframe');
     frame.id = 'iframe';
     frame.title = '章节练习';
-    frame.src = '/mooc-ans/knowledge/cards?knowledgeId=21';
+    frame.src = '/mooc-ans/knowledge/cards?knowledgeId=21' + (variant === 'standard-question' ? '&num=1&fixture=standard-question' : '');
     content.append(frame);
   } else if (variant === 'frame-video' || variant === 'cross-frame') {
     const frame = document.createElement('iframe');
