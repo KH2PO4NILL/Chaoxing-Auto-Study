@@ -4,6 +4,7 @@ import { expect, test, type Page, type Request, type Route } from '@playwright/t
 const asset = (file: string) => readFileSync(new URL(file, import.meta.url), 'utf8');
 const courseHtml = asset('./fixtures/course.html');
 const practiceHtml = asset('./fixtures/practice.html');
+const questionVideo = readFileSync(new URL('./fixtures/question.webm', import.meta.url));
 const bundle = asset('../dist/chaoxing-auto-study.user.js');
 const course = (section = '11', variant = '') => `https://mooc1.chaoxing.com/mycourse/studentstudy?courseId=42&chapterId=${section}${variant ? `&fixture=${variant}` : ''}`;
 const ai = 'https://model.example/v1';
@@ -18,9 +19,28 @@ test.beforeEach(async ({ page }) => {
     if (path.endsWith('/studentstudy')) return route.fulfill({ contentType: 'text/html; charset=utf-8', body: courseHtml });
     if (path.endsWith('/knowledge/cards')) return route.fulfill({ contentType: 'text/html', body: '<iframe src="/mooc-ans/work/doHomeWorkNew" title="题目"></iframe>' });
     if (path.endsWith('/work/doHomeWorkNew')) return route.fulfill({ contentType: 'text/html; charset=utf-8', body: practiceHtml });
-    if (path.endsWith('/video/index.html')) return route.fulfill({ contentType: 'text/html', body: '<video controls></video>' });
+    if (path.endsWith('.svg')) return route.fulfill({ contentType: 'image/svg+xml',
+      body: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="${path.includes('reference') ? 'blue' : 'red'}"/></svg>` });
+    if (path === '/question.webm') {
+      const range = route.request().headers().range?.match(/^bytes=(\d+)-(\d*)$/);
+      if (!range) return route.fulfill({ contentType: 'video/webm', headers: { 'Accept-Ranges': 'bytes' }, body: questionVideo });
+      const start = Number(range[1]);
+      const end = range[2] ? Math.min(questionVideo.length - 1, Number(range[2])) : questionVideo.length - 1;
+      return route.fulfill({ status: 206, contentType: 'video/webm',
+        headers: { 'Accept-Ranges': 'bytes', 'Content-Range': `bytes ${start}-${end}/${questionVideo.length}` },
+        body: questionVideo.subarray(start, end + 1) });
+    }
+    if (path.endsWith('/pdf/index.html')) return route.fulfill({ contentType: 'text/html', body:
+      '<div id="docContainer"><div id="img"><iframe id="panView" src="https://pan-yz.chaoxing.com/screen/v2/file_demo" style="height:100px"></iframe></div></div>' });
+    if (path.endsWith('/video/index.html')) return route.fulfill({ contentType: 'text/html', body:
+      new URL(route.request().url()).searchParams.has('question')
+        ? '<video src="/question.webm" controls preload="metadata"></video>' : '<video controls></video>' });
     return route.fulfill({ contentType: 'text/html', body: '<p>普通页面</p>' });
   });
+  await page.route('https://pan-yz.chaoxing.com/screen/v2/file_*', (route) => route.fulfill({ contentType: 'text/html', body: `<!doctype html>
+    <style>body,ul{margin:0;padding:0}img{height:90px;display:block}li{list-style:none;height:100px;position:relative}span{position:absolute;inset:0 auto auto 0}</style>
+    <div class="fileBox"><ul>${[1, 2, 3].map((n) =>
+      `<li id="anchor${n}"><img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3C/svg%3E"><span>${n}</span></li>`).join('')}</ul></div>` }));
   await page.route('https://other.example/**', (route) => route.fulfill({ contentType: 'text/html', body: '<p>其他网站</p>' }));
   await page.addInitScript({ content: `
     const attachShadow = Element.prototype.attachShadow;
@@ -184,7 +204,7 @@ test('A3 · interaction, autoplay rejection and inaccessible frames show the nex
   await expect(page.locator('#chaoxing-auto-study-host')).toHaveCount(1);
 });
 
-for (const [variant, reason] of [['locked-next', '已锁定'], ['practice-next', '下一项是练习'], ['unknown-next', '未明确标记']]) {
+for (const [variant, reason] of [['locked-next', '已锁定'], ['practice-next', '下一项是练习'], ['unknown-next', '未明确标记'], ['pdf-next', '下一项是 PDF 阅读']]) {
   test(`A3 · ${variant} stops in place`, async ({ page }) => {
     await page.goto(course('11', variant));
     await start(page, true);
@@ -263,6 +283,179 @@ test('A5 · incomplete rows and exam frames cannot be queried', async ({ page })
   await frame(page).locator('#exercise').evaluate((form) => form.setAttribute('data-assessment', 'exam'));
   await expect(page.locator('#stem')).toContainText('请在章节练习中点击');
   await expect(page.locator('#query')).toBeDisabled();
+});
+
+test('A4 · images in the stem and image-only options are sent only after confirmation and map back to the correct option', async ({ page }) => {
+  const sent: { type: string; text?: string; image_url?: { url: string } }[][] = [];
+  await mockAi(page, async (route, request) => {
+    sent.push(request.postDataJSON().messages[1].content);
+    await model(route, ['opt2']);
+  });
+  await page.goto(course('21'));
+  await service(page);
+  await review(page, 'q5');
+  await expect(page.locator('#send-stem')).toContainText('1 张图片');
+  await expect(page.locator('#send-options li')).toHaveText(['［1 张图片］', '［1 张图片］']);
+  expect(sent).toHaveLength(0);
+  await page.getByRole('button', { name: '确认查询' }).click();
+  await expect(page.locator('#suggested-options li')).toHaveText('第 2 项 ［1 张图片］');
+  expect(sent[0]?.filter((part) => part.image_url)).toHaveLength(3);
+  expect(sent[0]?.filter((part) => part.image_url).every((part) => part.image_url?.url.startsWith('data:image/jpeg;base64,'))).toBe(true);
+  expect(sent[0]?.filter((part) => part.type === 'text').slice(1).map((part) => part.text)).toEqual([
+    '题干 · 附件 1', 'opt1 · 附件 1', 'opt2 · 附件 1',
+  ]);
+  expect(JSON.stringify(sent)).not.toContain('chaoxing.com');
+  await page.getByRole('button', { name: '填入本题' }).click();
+  await expect(frame(page).locator('#q5 input[value=B]')).toBeChecked();
+  await expect(frame(page).locator('#submitted')).toHaveText('未提交');
+});
+
+test('A4 · a question video produces three distinct timestamped frames and leaves the player untouched', async ({ page }) => {
+  const sent: { type: string; text?: string; image_url?: { url: string } }[][] = [];
+  await mockAi(page, async (route, request) => {
+    sent.push(request.postDataJSON().messages[1].content);
+    await model(route, ['opt2']);
+  });
+  await page.goto(course('21'));
+  await service(page);
+  await review(page, 'q6');
+  await expect(page.locator('#send-media')).toContainText('3 张静帧');
+  await page.getByRole('button', { name: '确认查询' }).click();
+  await expect(page.locator('#suggested-options li')).toHaveText('蓝色');
+  const parts = sent[0]!;
+  expect(parts.filter(({ text }) => text?.includes('秒画面'))).toHaveLength(3);
+  expect(new Set(parts.filter(({ image_url }) => image_url).map(({ image_url }) => image_url?.url)).size).toBe(3);
+  expect(await frame(page).locator('#q6 video').evaluate((video: HTMLVideoElement) => [video.paused, video.currentTime])).toEqual([true, 0]);
+  await frame(page).locator('#q6 video').evaluate((element) => {
+    const iframe = element.ownerDocument.createElement('iframe');
+    iframe.src = '/ananas/modules/video/index.html?question';
+    element.replaceWith(iframe);
+  });
+  await expect(frame(page).frameLocator('#q6 iframe').locator('video')).toBeVisible();
+  await expect(page.locator('#query')).toBeEnabled();
+  await query(page, 'q6');
+  await expect(page.locator('#suggested-options li')).toHaveText('蓝色');
+  expect(sent).toHaveLength(2);
+  expect(sent[1]).toEqual(sent[0]);
+});
+
+test('A5 · replacing an image during a query invalidates its answer', async ({ page }) => {
+  let reply: (() => void) | undefined;
+  await mockAi(page, async (route) => {
+    await new Promise<void>((resolve) => { reply = resolve; });
+    try { await model(route, ['opt2']); } catch { /* The browser can discard the response after abort. */ }
+  });
+  await page.goto(course('21'));
+  await service(page);
+  await query(page, 'q5');
+  await expect.poll(() => Boolean(reply)).toBe(true);
+  await frame(page).locator('#q5 h3 img').evaluate((image) => image.setAttribute('src', '/question-first.svg'));
+  reply?.();
+  await expect(page.locator('#practice-status')).toContainText('已变化');
+  await expect(page.getByRole('button', { name: '填入本题' })).toBeHidden();
+});
+
+test('A4 · a special-font question can send a previewed screenshot without the DOM text', async ({ page }) => {
+  const payloads: { messages: { content: { text?: string; image_url?: { url: string } }[] }[] }[] = [];
+  await mockAi(page, async (route, request) => {
+    payloads.push(request.postDataJSON());
+    await model(route, ['opt1'], '降低信号干扰。');
+  });
+  await page.goto(course('21'));
+  await service(page);
+  await page.getByRole('tab', { name: '练习' }).click();
+  await frame(page).locator('#q7 h3').click();
+  await expect(page.locator('#stem')).toContainText('特殊字体');
+  await page.getByRole('button', { name: '截图查询' }).click();
+  const send = page.getByRole('button', { name: '确认查询' });
+  await expect(send).toBeDisabled();
+  const image = await frame(page).locator('#q7').screenshot();
+  await page.getByLabel('选择截图文件').setInputFiles({ name: 'question.png', mimeType: 'image/png', buffer: image });
+  await expect(page.getByAltText('待发送的题目截图')).toBeVisible();
+  expect(payloads).toHaveLength(0);
+  await send.click();
+  await expect(page.locator('#explanation')).toHaveText('降低信号干扰。');
+  await expect(page.locator('#suggested-options li')).toHaveText('第 1 项（按截图从上到下）');
+  expect(payloads).toHaveLength(1);
+  const content = payloads[0]?.messages[1]?.content;
+  expect(JSON.parse(content![0]!.text!)).toMatchObject({
+    type: 'single', options: [{ id: 'opt1', position: 1 }, { id: 'opt2', position: 2 }],
+  });
+  expect(JSON.stringify(content)).not.toMatch(/怭怫|怸低|question\.png/);
+  expect(content?.filter((part) => part.image_url)).toHaveLength(1);
+  expect(content?.find((part) => part.image_url)?.image_url?.url).toMatch(/^data:image\/jpeg;base64,/);
+  await expect(page.getByAltText('待发送的题目截图')).not.toHaveAttribute('src');
+  await frame(page).locator('#q7 ul').evaluate((list) => list.prepend(list.lastElementChild!));
+  await expect(page.locator('#practice-status')).toContainText('已变化');
+  await expect(page.getByRole('button', { name: '填入本题' })).toBeHidden();
+  await page.getByRole('button', { name: '截图查询' }).click();
+  const reordered = await frame(page).locator('#q7').screenshot();
+  await page.locator('#screenshot-input').evaluate((target, bytes) => {
+    const clipboardData = new DataTransfer();
+    clipboardData.items.add(new File([new Uint8Array(bytes)], 'clipboard.png', { type: 'image/png' }));
+    target.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, clipboardData }));
+  }, [...reordered]);
+  await expect(page.getByAltText('待发送的题目截图')).toBeVisible();
+  expect(payloads).toHaveLength(1);
+  await send.click();
+  await page.getByRole('button', { name: '填入本题' }).click();
+  await expect(frame(page).locator('#q7 input[value=B]')).toBeChecked();
+  await expect(frame(page).locator('#submitted')).toHaveText('未提交');
+});
+
+test('A8 · the nested cross-origin PDF reader scrolls, pauses, resumes and leaves the platform marker authoritative', async ({ page }) => {
+  await page.clock.install();
+  await page.goto(course('12', 'pdf-ready'));
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 100));
+  await openPanel(page);
+  await page.getByRole('button', { name: '开始阅读' }).click();
+  await expect(page.locator('#pdf-position')).toHaveText('PDF 滚动位置 0%');
+  const reader = page.frameLocator('#pdf-frame').frameLocator('#panView');
+  const offset = () => reader.locator('html').evaluate((html) => html.scrollTop);
+  await page.clock.runFor(4000);
+  await expect.poll(offset).toBe(80);
+  await expect(page.locator('#pdf-position')).toHaveText('PDF 滚动位置 40%');
+  await page.getByRole('button', { name: '暂停阅读' }).click();
+  await page.clock.runFor(8000);
+  expect(await offset()).toBe(80);
+  await page.getByRole('button', { name: '开始阅读' }).click();
+  await expect(page.locator('#pdf-position')).toHaveText('PDF 滚动位置 40%');
+  for (const expected of [160, 200]) {
+    await page.clock.runFor(4000);
+    await expect.poll(offset).toBe(expected);
+    await expect(page.locator('#pdf-position')).toHaveText(`PDF 滚动位置 ${expected / 2}%`);
+  }
+  await page.clock.runFor(4000);
+  await expect(page.locator('#pdf-status')).toContainText('已滚动至 PDF 末尾');
+  await expect(page.locator('#progress')).toContainText('有待完成任务');
+});
+
+test('A8 · a replaced PDF reader requires a fresh start', async ({ page }) => {
+  await page.clock.install();
+  await page.goto(course('12', 'pdf-ready'));
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 100));
+  await openPanel(page);
+  await page.getByRole('button', { name: '开始阅读' }).click();
+  await expect(page.locator('#pdf-position')).toHaveText('PDF 滚动位置 0%');
+  await page.frameLocator('#pdf-frame').locator('#panView').evaluate((iframe: HTMLIFrameElement) => iframe.replaceWith(iframe.cloneNode()));
+  await page.clock.runFor(8000);
+  await expect(page.locator('#pdf-status')).toContainText('PDF 阅读器已变化');
+  await expect(page.getByRole('button', { name: '开始阅读' })).toBeEnabled();
+  const offset = await page.frameLocator('#pdf-frame').frameLocator('#panView').locator('html').evaluate((html) => html.scrollTop);
+  expect(offset).toBe(0);
+});
+
+test('A8 · an inaccessible PDF is reported and mixed sections do not skip an open reader', async ({ page }) => {
+  await page.goto(course('12', 'pdf-unavailable'));
+  await openPanel(page);
+  await expect(page.locator('#pdf-status')).toContainText('使用学习通原阅读器');
+  await expect(page.getByRole('button', { name: '开始阅读' })).toBeDisabled();
+  await page.goto(course('11', 'mixed-pdf'));
+  await start(page, true);
+  await expect(page.getByRole('button', { name: '开始阅读' })).toBeEnabled();
+  await finish(page);
+  await expect(page.locator('#play-status')).toContainText('请先处理本节');
+  expect(await entries(page)).toBeNull();
 });
 
 test('A5 · delayed replies are invalidated by cutover, selection changes, cancellation, and reordering', async ({ page }) => {

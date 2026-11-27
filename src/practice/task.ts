@@ -1,17 +1,21 @@
-import { aiMessage } from '../ai/client';
-import type { AiClient, Suggestion } from '../ai/client';
+import { AiError, aiMessage } from '../ai/client';
+import type { AiClient, Suggestion, VisualInput } from '../ai/client';
+import { captureQuestionMedia, QuestionMediaError } from '../platform/chaoxing/question-media';
 import { sameQuestion, sameSelection } from '../platform/chaoxing/types';
 import type { FillResult, Question, QuestionSnapshot } from '../platform/chaoxing/types';
 import type { ServiceConfig, Settings } from '../settings/store';
+import { readScreenshot } from './screenshot';
 
 interface Query {
   question: QuestionSnapshot;
   config: ServiceConfig;
+  screenshot?: string;
 }
 
 export interface PracticeView {
   question: Question;
   review?: Query;
+  loadingScreenshot: boolean;
   busy: boolean;
   suggestion?: Suggestion;
   canFill: boolean;
@@ -21,6 +25,7 @@ export interface PracticeView {
 
 export class Practice {
   private review?: Query;
+  private screenshotAttempt?: object;
   private request?: { query: Query; controller: AbortController };
   private result?: { query: Query; suggestion: Suggestion };
   private message = '';
@@ -31,7 +36,8 @@ export class Practice {
     private readonly settings: Settings, private readonly client: AiClient, private readonly changed: () => void) {}
 
   view(question: Question): PracticeView {
-    return { question, review: this.review, busy: Boolean(this.request), suggestion: this.result?.suggestion,
+    return { question, review: this.review, loadingScreenshot: Boolean(this.screenshotAttempt),
+      busy: Boolean(this.request), suggestion: this.result?.suggestion,
       canFill: Boolean(this.result), message: this.message, filled: this.filled };
   }
 
@@ -55,9 +61,35 @@ export class Practice {
     this.changed();
   }
 
+  async attachScreenshot(file: File): Promise<void> {
+    const review = this.review;
+    if (!review?.question.requiresScreenshot) return;
+    const attempt = {};
+    this.screenshotAttempt = attempt;
+    review.screenshot = undefined;
+    this.message = '';
+    this.changed();
+    try {
+      const screenshot = await readScreenshot(file);
+      if (this.screenshotAttempt !== attempt) return;
+      if (!this.matches(review.question, this.read())) {
+        this.invalidate('题目、选项或当前选择已变化，请重新查询。');
+        return;
+      }
+      review.screenshot = screenshot;
+    } catch (error) {
+      if (this.screenshotAttempt === attempt) this.message = error instanceof Error ? error.message : '无法读取截图。';
+    } finally {
+      if (this.screenshotAttempt === attempt) {
+        this.screenshotAttempt = undefined;
+        this.changed();
+      }
+    }
+  }
+
   async send(): Promise<void> {
     const query = this.review;
-    if (!query) return;
+    if (!query || (query.question.requiresScreenshot && !query.screenshot)) return;
     this.review = undefined;
     if (!this.matches(query.question, this.read())) {
       this.invalidate('题目、选项或当前选择已变化，请重新查询。');
@@ -65,10 +97,32 @@ export class Practice {
     }
     const active = { query, controller: new AbortController() };
     this.request = active;
-    this.message = '正在查询模型。';
+    const groups = [{ ...query.question.stem, id: '题干' }, ...query.question.options];
+    const attachments = groups.flatMap(({ id, media }) => media.map((item, index) => ({
+      item, location: `${id} · 附件 ${index + 1}`,
+    })));
+    this.message = attachments.length ? '正在读取题目图片和视频画面。' : '正在查询模型。';
     this.changed();
     try {
-      const suggestion = await this.client.query(query.config, query.question, active.controller.signal);
+      const signal = active.controller.signal;
+      const visuals: VisualInput[] = [];
+      if (query.screenshot) {
+        visuals.push({ location: '用户提供的本题截图', data: query.screenshot });
+        query.screenshot = undefined;
+      }
+      if (attachments.length) {
+        const frames = await Promise.all(attachments.map(async ({ item, location }) =>
+          (await captureQuestionMedia(item, signal)).map((frame) => ({ ...frame, location }))));
+        if (this.request !== active) return;
+        if (!this.matches(query.question, this.read())) {
+          this.invalidate('题目、选项或当前选择已变化，请重新查询。');
+          return;
+        }
+        visuals.push(...frames.flat());
+        this.message = '正在查询模型。';
+        this.changed();
+      }
+      const suggestion = await this.client.query(query.config, query.question, visuals, signal);
       if (this.request !== active) return;
       if (!this.matches(query.question, this.read())) {
         this.invalidate('题目、选项或当前选择已变化，请重新查询。');
@@ -77,9 +131,16 @@ export class Practice {
       this.result = { query, suggestion };
       this.message = '模型建议已返回，请核对后决定是否填入。';
     } catch (error) {
-      if (this.request === active) this.message = aiMessage(error);
+      if (this.request === active) {
+        this.message = error instanceof QuestionMediaError ? error.message : aiMessage(error);
+        if ((attachments.length || query.question.requiresScreenshot)
+          && error instanceof AiError && [400, 415, 422].includes(error.status ?? 0)) {
+          this.message += ' 请确认模型和接口支持 Chat Completions 图片输入。';
+        }
+      }
     } finally {
       if (this.request === active) {
+        active.controller.abort();
         this.request = undefined;
         this.changed();
       }
@@ -106,6 +167,7 @@ export class Practice {
   invalidate(message: string, notify = true): void {
     const request = this.request;
     this.request = this.review = this.result = undefined;
+    this.screenshotAttempt = undefined;
     this.filled = undefined;
     this.message = message;
     request?.controller.abort();

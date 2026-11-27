@@ -17,7 +17,11 @@ export const selectors = {
   option: '[data-question-option], ul li[aria-checked], ul li:has(input[type="radio"], input[type="checkbox"], [aria-checked], .after, label)',
   optionText: '[data-option-text], .after, label:not(.before)',
   control: 'input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"], [aria-checked]',
-  complex: 'img, svg, canvas, math, video, audio, iframe, object, .font-cxsecret',
+  encodedQuestionText: '.font-cxsecret',
+  unsupportedQuestionContent: 'svg, canvas, math, audio, object, embed',
+  questionMedia: 'img, video, iframe',
+  pdfFrame: 'iframe[data-study-pdf], iframe[src*="/ananas/modules/pdf/" i], iframe[src*=".pdf" i]',
+  pdfEmbed: 'embed[type="application/pdf"], object[type="application/pdf"]',
   assessment: '[data-assessment="exam"], [data-assessment="homework"], form[action*="/exam/"]',
 } as const;
 

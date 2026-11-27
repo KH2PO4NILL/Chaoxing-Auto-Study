@@ -1,6 +1,7 @@
 import { AiClient } from './ai/client';
 import { Chaoxing } from './platform/chaoxing/adapter';
 import { studyUrl } from './platform/chaoxing/dom';
+import { mountPanReader, panReaderUrl } from './platform/chaoxing/pan-reader';
 import { StudySession } from './session/study';
 import { credentialKey, Settings, settingsKey } from './settings/store';
 import { Panel } from './ui/panel';
@@ -13,7 +14,10 @@ declare const GM_removeValueChangeListener: (id: number) => void;
 
 const hostId = 'chaoxing-auto-study-host';
 
-if (window.top === window && studyUrl(new URL(window.location.href)) && !document.getElementById(hostId)) {
+const url = new URL(window.location.href);
+if (window.top !== window && panReaderUrl(url)) mountPanReader(window);
+
+if (window.top === window && studyUrl(url) && !document.getElementById(hostId)) {
   const host = document.createElement('div');
   host.id = hostId;
   host.hidden = true;

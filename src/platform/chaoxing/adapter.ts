@@ -1,5 +1,6 @@
 import { nextSection, readCatalog } from './catalog';
 import { selectors, studyUrl, textOf, urlParam, visible } from './dom';
+import { readPdf } from './pdf';
 import { Questions } from './questions';
 import type { CourseContext, FillResult, NextSection, Question, QuestionSnapshot, SectionIdentity } from './types';
 
@@ -19,10 +20,11 @@ export class Chaoxing {
     let blockedMedia = false;
     for (const document of documents) {
       for (const frame of document.querySelectorAll<HTMLIFrameElement>('iframe')) {
-        if (!visible(frame)) continue;
+        if (!visible(frame) || frame.closest(selectors.question)) continue;
         let frameUrl: URL;
         try { frameUrl = new URL(frame.getAttribute('src') || 'about:blank', document.baseURI); } catch { continue; }
-        const isTask = frame.matches('#iframe, [data-study-frame]') || /\/knowledge\/cards|\/ananas\/modules\/video/i.test(frameUrl.pathname);
+        const isTask = !frame.matches(selectors.pdfFrame) && (frame.matches('#iframe, [data-study-frame]')
+          || /\/knowledge\/cards|\/ananas\/modules\/video/i.test(frameUrl.pathname));
         const requestedSection = /\/knowledge\/cards/i.test(frameUrl.pathname) ? urlParam(frameUrl, 'knowledgeid', 'chapterid') : '';
         if (requestedSection && sectionId && requestedSection !== sectionId) continue;
         let child: Document | null;
@@ -48,15 +50,19 @@ export class Chaoxing {
     if (!studyUrl(url) || url.searchParams.has('examsystem') || document.querySelector(selectors.assessment)) return undefined;
     const catalog = readCatalog(document);
     const { documents, blockedMedia } = this.available(catalog.currentId);
-    const videos = documents.flatMap((doc) => Array.from(doc.querySelectorAll<HTMLVideoElement>('video')).filter(visible));
+    const videos = documents.flatMap((doc) => Array.from(doc.querySelectorAll<HTMLVideoElement>('video'))
+      .filter((video) => visible(video) && !video.closest(selectors.question)));
+    const pdf = readPdf(documents);
     const tab = document.querySelector(selectors.tab);
     const tabLabel = tab?.getAttribute('data-study-tab') || textOf(tab);
     const tabType = /^(?:practice|章节测验|章节练习|测验|练习)$/i.test(tabLabel) ? 'practice'
-      : /^(?:video|视频|视频课)$/i.test(tabLabel) ? 'video' : undefined;
+      : /^(?:video|视频|视频课)$/i.test(tabLabel) ? 'video'
+      : /^(?:pdf|文档|阅读)$/i.test(tabLabel) ? 'pdf' : undefined;
     const practice = documents.some((doc) => Array.from(doc.querySelectorAll(selectors.question)).some(visible));
-    const media = videos.length === 1 && tabType !== 'practice' ? videos[0] : undefined;
+    const media = videos.length === 1 && tabType !== 'practice' && tabType !== 'pdf' ? videos[0] : undefined;
     const sectionType = catalog.current?.dataset.sectionType || catalog.current?.dataset.type;
     const kind = tabType || (media ? 'video' : practice ? 'practice'
+      : pdf || /^(?:pdf|文档|阅读)$/i.test(sectionType ?? '') ? 'pdf'
       : /^(?:practice|quiz|work)$/i.test(sectionType ?? '') ? 'practice'
       : sectionType && !/^(?:video|视频)$/i.test(sectionType) ? 'other' : 'unknown');
     return {
@@ -69,6 +75,8 @@ export class Chaoxing {
       progress: catalog.progress,
       kind,
       media,
+      pdf,
+      hasPractice: practice,
       blockedMedia: blockedMedia || videos.length > 1,
       interaction: documents.some((doc) => Array.from(doc.querySelectorAll(selectors.interaction)).some(visible)),
     };

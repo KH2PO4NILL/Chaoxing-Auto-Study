@@ -1,4 +1,5 @@
 import type { StudySession, StudyView } from '../session/study';
+import type { QuestionMedia, QuestionSnapshot } from '../platform/chaoxing/types';
 
 const template = `
 <style>
@@ -26,6 +27,9 @@ const template = `
   #preview, #suggestion { margin-top: 10px; }
   #preview p, #suggestion p { white-space: pre-wrap; }
   #preview ol, #suggestion ul { margin: 6px 0; padding-left: 24px; }
+  #screenshot-input { margin: 8px 0; }
+  #screenshot-input input { width: 100%; margin: 4px 0 0; }
+  #screenshot-preview { display: block; max-width: 100%; max-height: 230px; object-fit: contain; }
   label.field { display: block; margin-bottom: 10px; }
   label.field input { display: block; margin-top: 3px; width: 100%; }
   #stem, #location { overflow-wrap: anywhere; }
@@ -41,10 +45,19 @@ const template = `
     <button id="tab-settings" role="tab" aria-controls="settings" aria-selected="false" tabindex="-1">设置</button>
   </div>
   <div id="play" role="tabpanel" aria-labelledby="tab-play">
-    <p id="position"></p><p id="progress" class="secondary"></p>
-    <p><label>播放模式<select id="mode"><option value="section">仅本节</option><option value="chapter">连续播放本章</option></select></label></p>
-    <div class="actions"><button id="start" class="primary">开始</button><button id="pause">暂停</button><button id="stop">停止</button></div>
-    <p id="play-status" class="status" role="status"></p>
+    <div id="video-controls">
+      <p id="position"></p>
+      <p><label>播放模式<select id="mode"><option value="section">仅本节</option><option value="chapter">连续播放本章</option></select></label></p>
+      <div class="actions"><button id="start" class="primary">开始</button><button id="pause">暂停</button><button id="stop">停止</button></div>
+      <p id="play-status" class="status" role="status"></p>
+    </div>
+    <section id="pdf" aria-labelledby="pdf-heading" hidden>
+      <h3 id="pdf-heading">PDF 阅读</h3>
+      <p id="pdf-position" class="secondary" hidden></p>
+      <div class="actions"><button id="pdf-start" class="primary">开始阅读</button><button id="pdf-pause">暂停阅读</button></div>
+      <p id="pdf-status" class="status" role="status"></p>
+    </section>
+    <p id="progress" class="secondary"></p>
   </div>
   <div id="practice" role="tabpanel" aria-labelledby="tab-practice" hidden>
     <h3 id="question-type"></h3><p id="stem"></p>
@@ -52,7 +65,13 @@ const template = `
     <p id="practice-status" class="status" role="status"></p>
     <section id="preview" aria-labelledby="preview-heading" hidden>
       <h3 id="preview-heading">确认发送给模型</h3>
-      <p id="destination"></p><p id="send-stem"></p><ol id="send-options"></ol>
+      <p id="destination"></p><p id="send-stem"></p><ol id="send-options"></ol><p id="send-media" class="secondary" hidden></p>
+      <div id="screenshot-input" tabindex="0" role="group" aria-label="题目截图" aria-describedby="screenshot-guide" hidden>
+        <p id="screenshot-guide" class="secondary"></p>
+        <label>选择截图文件<input id="screenshot-file" type="file" accept="image/png,image/jpeg,image/webp"></label>
+        <p id="screenshot-loading" role="status" hidden>正在读取截图。</p>
+        <img id="screenshot-preview" alt="待发送的题目截图" hidden>
+      </div>
       <div class="actions"><button id="send" class="primary">确认查询</button><button id="dismiss">返回</button></div>
     </section>
     <section id="suggestion" aria-labelledby="suggestion-heading" hidden>
@@ -80,6 +99,19 @@ const tabs = ['play', 'practice', 'settings'] as const;
 const questionTypes = { single: '单选题', multiple: '多选题', judgement: '判断题' };
 const playbackStates = { idle: '待命', starting: '启动中', playing: '播放中', paused: '已暂停',
   waiting: '等待操作', ended: '已结束', stopped: '已停止', navigating: '正在进入下一节' };
+
+function contentLabel({ text, media }: { text: string; media: QuestionMedia[] }): string {
+  const images = media.filter((item) => item.kind === 'image').length;
+  const videos = media.length - images;
+  const attachments = [images ? `${images} 张图片` : '', videos ? `${videos} 段视频` : ''].filter(Boolean).join('、');
+  return [text, attachments ? `［${attachments}］` : ''].filter(Boolean).join(' ');
+}
+
+function visibleOption(question: QuestionSnapshot, index: number): string {
+  const option = question.options[index]!;
+  if (question.requiresScreenshot) return `第 ${index + 1} 项（按截图从上到下）`;
+  return option.media.length ? `第 ${index + 1} 项 ${contentLabel(option)}` : option.text;
+}
 
 function clock(time: number): string {
   if (!Number.isFinite(time)) return '—';
@@ -163,9 +195,23 @@ export class Panel {
     this.button('start', () => this.session().start());
     this.button('pause', () => this.session().pause());
     this.button('stop', () => this.session().stop());
+    this.button('pdf-start', () => this.session().readPdf());
+    this.button('pdf-pause', () => this.session().pausePdf());
     this.button('query', () => {
       this.session().prepare();
-      if (!this.el('preview').hidden) this.el('send').focus();
+      if (!this.el('preview').hidden) this.el(this.el('screenshot-input').hidden ? 'send' : 'screenshot-input').focus();
+    });
+    const screenshot = this.el<HTMLInputElement>('screenshot-file');
+    screenshot.addEventListener('change', () => {
+      const file = screenshot.files?.[0];
+      if (file) this.session().attachScreenshot(file);
+      screenshot.value = '';
+    });
+    this.el('screenshot-input').addEventListener('paste', (event) => {
+      const file = event.clipboardData?.files[0];
+      if (!file) return;
+      event.preventDefault();
+      this.session().attachScreenshot(file);
     });
     this.button('send', () => this.session().send());
     this.button('cancel', () => { this.session().cancel(); this.el('query').focus(); });
@@ -198,11 +244,11 @@ export class Panel {
     if (this.host.hidden !== !view) this.host.hidden = !view;
     if (!view) return;
     if (!this.host.isConnected) this.host.ownerDocument.body?.append(this.host);
-    const { context, playback, practice, settings } = view;
+    const { context, playback, reading, practice, settings } = view;
     const collapsed = settings.readOnly ? this.localCollapsed ?? settings.collapsed : settings.collapsed;
     this.el('panel').hidden = collapsed;
     this.el('toggle').setAttribute('aria-expanded', String(!collapsed));
-    this.text('toggle', `学习助手 · ${playbackStates[playback.state]}`);
+    this.text('toggle', `学习助手 · ${reading.running ? '阅读中' : playbackStates[playback.state]}`);
     this.text('location', [context.courseName, context.chapterName, context.sectionName].join(' / '));
     this.text('position', context.media ? `视频位置 ${clock(playback.time)} / ${clock(playback.duration)}` : '视频位置 —');
     this.text('progress', `学习通完成标记 ${context.progress}`);
@@ -214,6 +260,13 @@ export class Panel {
     this.disable('pause', !['playing', 'starting'].includes(playback.state));
     this.disable('stop', !['playing', 'starting', 'paused', 'waiting', 'navigating'].includes(playback.state));
     this.text('play-status', playback.message);
+    this.el('video-controls').hidden = context.kind === 'pdf' && !context.media;
+    this.el('pdf').hidden = !reading.visible;
+    this.el('pdf-position').hidden = reading.percent === undefined;
+    this.text('pdf-position', reading.percent === undefined ? '' : `PDF 滚动位置 ${reading.percent}%`);
+    this.disable('pdf-start', !reading.canStart);
+    this.disable('pdf-pause', !reading.running);
+    this.text('pdf-status', reading.message);
     this.renderPractice(practice);
     this.renderSettings(view);
   }
@@ -221,8 +274,9 @@ export class Panel {
   private renderPractice(practice: StudyView['practice']): void {
     const current = 'snapshot' in practice.question ? practice.question.snapshot : undefined;
     this.text('question-type', current ? questionTypes[current.type] : '当前题目');
-    this.text('stem', current?.stem ?? ('reason' in practice.question ? practice.question.reason : ''));
-    this.text('query', practice.suggestion || practice.message ? '重新查询' : '查询答案');
+    this.text('stem', current?.requiresScreenshot ? '页面文字使用特殊字体。可截图查询这道题。'
+      : current ? contentLabel(current.stem) : ('reason' in practice.question ? practice.question.reason : ''));
+    this.text('query', current?.requiresScreenshot ? '截图查询' : practice.suggestion || practice.message ? '重新查询' : '查询答案');
     this.disable('query', !current || practice.busy || Boolean(practice.review));
     this.el('cancel').hidden = !practice.busy;
     this.el('fill').hidden = !practice.canFill;
@@ -230,13 +284,31 @@ export class Panel {
     const review = practice.review;
     this.el('preview').hidden = !review;
     this.text('destination', review?.config.origin ?? '');
-    this.text('send-stem', review?.question.stem ?? '');
-    this.list('send-options', review?.question.options.map(({ text }) => text) ?? []);
+    const screenshotQuestion = review?.question.requiresScreenshot ? review.question : undefined;
+    const screenshotMode = Boolean(screenshotQuestion);
+    this.text('send-stem', review && !screenshotMode ? contentLabel(review.question.stem) : '');
+    this.list('send-options', screenshotMode ? [] : review?.question.options.map(contentLabel) ?? []);
+    this.el('screenshot-input').hidden = !screenshotMode;
+    this.text('screenshot-guide', screenshotQuestion
+      ? `按 Ctrl+V 粘贴截图，或选择图片文件。请只截当前题的题干及全部 ${screenshotQuestion.options.length} 个选项，并核对顺序。` : '');
+    this.el('screenshot-loading').hidden = !practice.loadingScreenshot;
+    const preview = this.el<HTMLImageElement>('screenshot-preview');
+    preview.hidden = !review?.screenshot;
+    if (review?.screenshot && preview.getAttribute('src') !== review.screenshot) preview.src = review.screenshot;
+    if (!review?.screenshot && preview.hasAttribute('src')) preview.removeAttribute('src');
+    this.disable('send', screenshotMode && !review?.screenshot);
+    const media = review ? [review.question.stem, ...review.question.options].flatMap((item) => item.media) : [];
+    this.el('send-media').hidden = !screenshotMode && !media.length;
+    this.text('send-media', screenshotMode ? '截图查询需要支持图片输入的模型。' : media.some((item) => item.kind === 'video')
+      ? '将随文字发送题目图片及每段视频的 3 张静帧。视频音频不发送。请使用支持图片输入的模型。'
+      : '将随文字发送题目图片。请使用支持图片输入的模型。');
     const suggestion = practice.suggestion;
     this.el('suggestion').hidden = !suggestion;
-    this.list('suggested-options', current?.options.filter(({ id }) => suggestion?.optionIds.includes(id)).map(({ text }) => text) ?? []);
+    this.list('suggested-options', current?.options.flatMap(({ id }, index) =>
+      suggestion?.optionIds.includes(id) ? [visibleOption(current, index)] : []) ?? []);
     this.text('explanation', suggestion?.explanation ?? '');
-    const selected = current?.options.filter(({ id }) => practice.filled?.includes(id)).map(({ text }) => text) ?? [];
+    const selected = current?.options.flatMap(({ id }, index) =>
+      practice.filled?.includes(id) ? [visibleOption(current, index)] : []) ?? [];
     this.text('filled', practice.filled ? `读回的选择 ${selected.join('、') || '无'}` : '');
   }
 

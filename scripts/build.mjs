@@ -12,8 +12,9 @@ const metadata = [
   '// @namespace    https://github.com/KH2PO4NILL/Chaoxing-Auto-Study',
   `// @version      ${version}`,
   '// @license      MIT',
-  '// @description  在学习通课程页连续观看视频和查询章节练习建议',
+  '// @description  在学习通课程页播放视频、阅读 PDF 和查询章节练习建议',
   ...matches,
+  '// @match        https://pan-yz.chaoxing.com/screen/v2/file_*',
   '// @grant        GM_getValue',
   '// @grant        GM_setValue',
   '// @grant        GM_deleteValue',
@@ -21,7 +22,6 @@ const metadata = [
   '// @grant        GM_removeValueChangeListener',
   '// @sandbox      DOM',
   '// @run-at       document-end',
-  '// @noframes',
   '// ==/UserScript==',
 ].join('\n');
 

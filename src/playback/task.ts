@@ -39,6 +39,7 @@ export class Playback {
     if (this.state === 'idle') {
       if (!context?.identity) message = '课程、章或小节尚未识别，请使用原页面。';
       else if (context.kind === 'practice') message = '当前是章节练习，可切换到练习页签。';
+      else if (context.kind === 'pdf') message = '当前是 PDF 阅读，可使用下方的阅读控制。';
       else if (context.blockedMedia && !this.media) message = '播放器不可访问或当前视频不唯一，请使用原播放器。';
       else if (!this.media) message = '等待当前小节的播放器出现。';
       else if (this.media.ended) message = '当前视频已结束。可在原播放器重新播放。';
@@ -71,7 +72,7 @@ export class Playback {
       }
       return;
     }
-    if (context.kind === 'practice' || context.kind === 'other' || (context.blockedMedia && !video)) {
+    if (context.kind === 'practice' || context.kind === 'pdf' || context.kind === 'other' || (context.blockedMedia && !video)) {
       this.finish('stopped', '当前内容需要手动处理，播放流程已停止。');
       return;
     }
@@ -164,6 +165,10 @@ export class Playback {
     }
     if (this.mode === 'section') {
       this.finish('ended', '本节视频已结束。');
+      return;
+    }
+    if (context.pdf || context.hasPractice) {
+      this.finish('ended', '本节视频已结束。请先处理本节的阅读或练习，再进入下一节。');
       return;
     }
     const next = this.page.next(context.identity);
